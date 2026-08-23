@@ -132,6 +132,33 @@ The signaling server is a plain Node.js process (`signaling/src/server.js`, entr
 `npm start`). Any Node 18+ host works - a small VM, a container, or a PaaS (Fly.io, Render,
 Railway, etc. all run a Node process behind HTTPS/WSS with minimal setup).
 
+### Render (chosen host for this deployment)
+
+A Render Blueprint is checked in at the repo root (`render.yaml`) so this is a few clicks rather
+than manual form-filling:
+
+1. Go to the [Render dashboard](https://dashboard.render.com) → **New +** → **Blueprint**.
+2. Connect the `iamankoo/Dekh-Bhai` GitHub repository (already pushed - see the repo root).
+3. Render reads `render.yaml` and proposes one service, `dekh-bhai-signaling`, with
+   `rootDir: signaling`, `npm ci --omit=dev` as the build command, `npm start` as the start
+   command, and `/health` as the health check path - confirm and deploy.
+4. Render assigns its own `PORT` automatically (the app already reads `process.env.PORT` with a
+   `8787` fallback for local dev - `signaling/src/config.js` - so no change needed) and gives you
+   an HTTPS/WSS-capable domain like `https://dekh-bhai-signaling.onrender.com` with **TLS already
+   terminated** - no separate nginx/certbot step needed on Render specifically.
+5. `TURN_URL`/`TURN_SECRET` are declared in `render.yaml` with `sync: false` - deliberately left
+   for you to fill in via the Render dashboard's Environment tab once coturn (section 3) exists;
+   they're never written into the blueprint file itself. Until then they're unset and the server
+   correctly falls back to STUN-only (see `buildIceServers` in `turnCredentials.js`).
+6. Once deployed, give the resulting domain back so `viewer/config.js` (Vercel) and the desktop
+   app's `DEKHBHAI_SIGNALING_WS_URL`/`DEKHBHAI_VIEWER_BASE_URL` can be pointed at it and the
+   viewer redeployed.
+
+Free-tier Render web services spin down after a period of inactivity and take a few seconds to
+wake on the next request - fine for testing, but worth upgrading to a paid instance type before
+relying on this for a real "someone opens my link right now" demo, since the first WebSocket
+connection after an idle period may time out waiting for the instance to wake.
+
 ```bash
 cd signaling
 npm ci --omit=dev

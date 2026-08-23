@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: dekh-bhai-signaling
+    runtime: node
+    rootDir: signaling
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # STUN is fine to leave at its code default (stun.l.google.com) unless you run your own.
+      - key: STUN_URLS
+        value: stun:stun.l.google.com:19302
+      # Left unset here on purpose - set manually in the Render dashboard once coturn exists
+      # (docs/deployment/phase-2.md section 3). Never commit a real TURN secret to this file.
+      - key: TURN_URL
+        sync: false
+      - key: TURN_SECRET
+        sync: false
