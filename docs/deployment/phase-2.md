@@ -38,14 +38,14 @@ cross-origin; `viewer/config.js` is the one file that tells it which origin to u
 
 ## 1. Deploying the viewer to Vercel
 
-**Status: deployed.** Live at **https://viewer-theta-ashy.vercel.app** (Vercel project
-`iamankoos-projects/viewer`, root directory `viewer/`). Confirmed via `curl`: `/` returns `200`
-over HTTPS, `/config.js` is served, and `/v/testSession123` correctly rewrites to `index.html`
-while keeping the path intact. `DEKHBHAI_SIGNALING_ORIGIN` in `viewer/config.js` is still the
-default empty value - **it must be set to signaling's real origin once section 2 below is done**,
-then redeployed (`cd viewer && vercel --prod --yes`), before any real session will connect. Until
-then this deployment can serve the page but cannot reach a signaling server (there isn't one to
-reach yet).
+**Status: deployed and pointed at production signaling.** Live at
+**https://viewer-theta-ashy.vercel.app** (Vercel project `iamankoos-projects/viewer`, root
+directory `viewer/`). `viewer/config.js` now sets `DEKHBHAI_SIGNALING_ORIGIN` to
+`https://dekh-bhai-signaling.onrender.com`, deployed and confirmed live via `curl`: the production
+alias serves the updated `config.js` with that value. See "Known issue" under section 2 below -
+the signaling deployment itself is currently unreliable, so a real session through this viewer
+will intermittently fail to connect until that's resolved, independent of anything in the viewer
+deployment.
 
 ### What changed to make this possible
 
@@ -158,6 +158,31 @@ Free-tier Render web services spin down after a period of inactivity and take a 
 wake on the next request - fine for testing, but worth upgrading to a paid instance type before
 relying on this for a real "someone opens my link right now" demo, since the first WebSocket
 connection after an idle period may time out waiting for the instance to wake.
+
+### Known issue: this deployment is currently unreliable, not just cold-starting
+
+Measured directly against `https://dekh-bhai-signaling.onrender.com` after deployment: repeated
+`GET /health` requests, one per second for 20 seconds continuously, returned `200` only 14/20
+times - failures were spread through the whole window, not clustered at the start the way a
+one-time cold-start wake-up would be. Failing responses carry Render's own
+`x-render-routing: no-server` header (not our Express app's 404 - it's Render's edge saying no
+backend instance was available to route to at that instant), confirming this is a platform/
+process-health issue, not an application bug. A matching WebSocket-level probe (8 real
+`wss://.../ws?role=host` connection attempts, 1.5s apart) got a proper `session-created` response
+- correct protocol, correct `sessionId`/`hostToken`/`iceServers` shape - on only **2 of 8**
+attempts; the other 6 failed with `Unexpected server response: 404` at the WebSocket upgrade
+step.
+
+**Conclusion**: the signaling protocol implementation itself is confirmed correct end-to-end when
+a request actually reaches the running instance (see the successful `session-created` payloads
+above) - this is not a code defect in `server.js`. But at a ~25-70% request failure rate, this
+deployment is not usable for a real session right now: a Windows host would frequently fail to
+even create a session, and any session that did get created would be at real risk of the
+WebSocket dropping mid-connection setup (offer/answer/ICE candidates flow over this same socket).
+**This needs to be resolved (check Render's service Logs/Events tab for restart/crash entries,
+and consider whether the free instance type is adequate) before any further real-session testing
+is meaningful** - building a UI-driven end-to-end test on top of a backend failing this often
+would produce misleading, non-reproducible results rather than a real verification.
 
 ```bash
 cd signaling
@@ -309,8 +334,8 @@ MSIX build" below):
 
 | Variable | Production value |
 |---|---|
-| `DEKHBHAI_SIGNALING_WS_URL` | `wss://<signaling-domain>/ws?role=host` |
-| `DEKHBHAI_VIEWER_BASE_URL` | `https://<vercel-viewer-domain>/` |
+| `DEKHBHAI_SIGNALING_WS_URL` | `wss://dekh-bhai-signaling.onrender.com/ws?role=host` |
+| `DEKHBHAI_VIEWER_BASE_URL` | `https://viewer-theta-ashy.vercel.app/` |
 
 Both default to `ws://localhost:8787/...`/`http://localhost:8787/` (`AppConfig.cs`) when unset -
 correct for local development, **wrong for any real install** (see "Current known MSIX issue"
@@ -420,27 +445,36 @@ in this order (do not claim any later item works until the ones before it are co
 1. [x] Vercel viewer URL loads over HTTPS - confirmed via `curl`:
        https://viewer-theta-ashy.vercel.app/ returns `200`, and `/v/testSession123` correctly
        rewrites to `index.html` with the path intact.
-2. [ ] `viewer/config.js` on the deployed site has `DEKHBHAI_SIGNALING_ORIGIN` set to the real
-       signaling domain (view page source / `curl https://<project>.vercel.app/config.js`) - still
-       the empty default; blocked on signaling actually being deployed (see section 2 above).
-3. [ ] A real Dekh Bhai session (desktop app pointed at the deployed signaling URL via
+2. [x] `viewer/config.js` on the deployed site has `DEKHBHAI_SIGNALING_ORIGIN` set to the real
+       signaling domain - confirmed via `curl https://viewer-theta-ashy.vercel.app/config.js`.
+3. [x] Signaling accepts the existing WebSocket protocol correctly when reachable - a real
+       `wss://dekh-bhai-signaling.onrender.com/ws?role=host` connection received a well-formed
+       `session-created` response (`sessionId`, `hostToken`, `iceServers`) on the attempts that
+       connected. **However only 2 of 8 attempts connected at all** - see "Known issue" in
+       section 2 above. Items 4 onward below (real session, video, audio, termination) are
+       blocked on that being fixed first - attempting them against a backend failing this often
+       would not produce a trustworthy result.
+4. [ ] A real Dekh Bhai session (desktop app pointed at the deployed signaling URL via
        `DEKHBHAI_SIGNALING_WS_URL`) generates a share URL pointing at the Vercel domain
        (`DEKHBHAI_VIEWER_BASE_URL`), and the QR code encodes the identical URL.
-4. [ ] That URL opens successfully from a **separate** browser/device (not the host machine).
-5. [ ] WebRTC negotiation succeeds - viewer reaches `connectionState: connected`
+5. [ ] That URL opens successfully from a **separate** browser/device (not the host machine).
+6. [ ] WebRTC negotiation succeeds - viewer reaches `connectionState: connected`
        (`RTCPeerConnection.getStats()`), not just the signaling WebSocket connecting.
-6. [ ] Video frames are received (`framesDecoded` growing, `framesDropped: 0` via `getStats()`).
-7. [ ] System audio is received (`bytesReceived` growing on the audio `inbound-rtp` stat).
-8. [ ] Fullscreen works in the viewer and Esc does not end the session.
-9. [ ] Stop Sharing / session expiration correctly ends the session and the viewer shows the
-       matching terminal state.
-10. [ ] No `localhost` URL appears anywhere in the deployed viewer's configuration or in the
+7. [ ] Video frames are received (`framesDecoded` growing, `framesDropped: 0` via `getStats()`).
+8. [ ] System audio is received (`bytesReceived` growing on the audio `inbound-rtp` stat).
+9. [ ] Fullscreen works in the viewer and Esc does not end the session.
+10. [ ] Stop Sharing / session expiration correctly ends the session and the viewer shows the
+        matching terminal state.
+11. [ ] No `localhost` URL appears anywhere in the deployed viewer's configuration or in the
         share link/QR code generated by a production-configured desktop build.
 
-**Do not claim a real Internet end-to-end connection is complete until items 1-10 above are
+**Do not claim a real Internet end-to-end connection is complete until items 1-11 above are
 individually confirmed, and do not claim cross-network/TURN reliability until section 3 (coturn)
 is deployed and a connection has been forced through it from two genuinely different networks** -
-none of that has happened yet in this environment.
+none of that has happened yet in this environment. **Item 3's finding also means the Render
+deployment's reliability itself needs to be fixed before items 4-11 are attempted**, since testing
+a real session against a backend that fails 25-70%+ of requests would not produce a meaningful
+result either way.
 
 ## What is NOT covered by this document
 

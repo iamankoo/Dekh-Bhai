@@ -15,4 +15,4 @@
  * run signaling, such as Vercel. This is public configuration (a WebSocket endpoint, not a
  * secret) - see docs/architecture/phase-2-technology-decision.md.
  */
-window.DEKHBHAI_SIGNALING_ORIGIN = '';
+window.DEKHBHAI_SIGNALING_ORIGIN = 'https://dekh-bhai-signaling.onrender.com';

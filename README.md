@@ -21,9 +21,13 @@ been deployed to a real public domain or tested across different networks/mobile
 variables) needed to close those gaps.
 
 **Live deployment status**: the viewer is deployed to Vercel at
-https://viewer-theta-ashy.vercel.app (HTTPS, verified reachable). The signaling server and TURN
-relay are **not yet deployed anywhere public** - see `docs/deployment/phase-2.md` §2-3 for exactly
-what's blocking that and the steps to finish it.
+https://viewer-theta-ashy.vercel.app, pointed at the signaling server deployed to Render at
+https://dekh-bhai-signaling.onrender.com. The signaling protocol itself is confirmed working (a
+real WebSocket connection returns a correct `session-created` response), **but the Render
+deployment is currently unreliable - roughly a quarter to three-quarters of requests fail** with
+Render's own "no-server" routing error, not an application bug. See `docs/deployment/phase-2.md`
+§2 ("Known issue") for the measurements and next step (check Render's service logs). TURN is
+**not yet deployed** - see §3.
 
 ```
 Windows laptop (native capture)  --WebRTC-->  Browser viewer (any device, no install)
