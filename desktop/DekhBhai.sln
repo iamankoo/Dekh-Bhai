@@ -1,0 +1,52 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{43B1C811-49C7-4AE5-B4DA-811989980600}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DekhBhai.App", "src\DekhBhai.App\DekhBhai.App.csproj", "{B55A5143-E387-4A08-A42F-BCD18D0CE740}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DekhBhai.Core", "src\DekhBhai.Core\DekhBhai.Core.csproj", "{4B415A2B-0B1F-4D3F-AF48-0CEC64B3A904}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{AE29D1AF-225C-4DB2-9838-C7C8A49CFF76}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DekhBhai.Core.Tests", "tests\DekhBhai.Core.Tests\DekhBhai.Core.Tests.csproj", "{ABF4B3CF-13A1-4B7B-AF2F-C79FC1189F93}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{E08D4A26-1073-4C05-8484-C1B61F726016}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CaptureSmokeTest", "tools\CaptureSmokeTest\CaptureSmokeTest.csproj", "{ACD95760-54CB-45AA-B8D5-F7DE5FC84FC3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{B55A5143-E387-4A08-A42F-BCD18D0CE740}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B55A5143-E387-4A08-A42F-BCD18D0CE740}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B55A5143-E387-4A08-A42F-BCD18D0CE740}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B55A5143-E387-4A08-A42F-BCD18D0CE740}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4B415A2B-0B1F-4D3F-AF48-0CEC64B3A904}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{4B415A2B-0B1F-4D3F-AF48-0CEC64B3A904}.Debug|Any CPU.Build.0 = Debug|x64
+		{4B415A2B-0B1F-4D3F-AF48-0CEC64B3A904}.Release|Any CPU.ActiveCfg = Release|x64
+		{4B415A2B-0B1F-4D3F-AF48-0CEC64B3A904}.Release|Any CPU.Build.0 = Release|x64
+		{ABF4B3CF-13A1-4B7B-AF2F-C79FC1189F93}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ABF4B3CF-13A1-4B7B-AF2F-C79FC1189F93}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ABF4B3CF-13A1-4B7B-AF2F-C79FC1189F93}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ABF4B3CF-13A1-4B7B-AF2F-C79FC1189F93}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ACD95760-54CB-45AA-B8D5-F7DE5FC84FC3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ACD95760-54CB-45AA-B8D5-F7DE5FC84FC3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ACD95760-54CB-45AA-B8D5-F7DE5FC84FC3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ACD95760-54CB-45AA-B8D5-F7DE5FC84FC3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{B55A5143-E387-4A08-A42F-BCD18D0CE740} = {43B1C811-49C7-4AE5-B4DA-811989980600}
+		{4B415A2B-0B1F-4D3F-AF48-0CEC64B3A904} = {43B1C811-49C7-4AE5-B4DA-811989980600}
+		{ABF4B3CF-13A1-4B7B-AF2F-C79FC1189F93} = {AE29D1AF-225C-4DB2-9838-C7C8A49CFF76}
+		{ACD95760-54CB-45AA-B8D5-F7DE5FC84FC3} = {E08D4A26-1073-4C05-8484-C1B61F726016}
+	EndGlobalSection
+EndGlobal

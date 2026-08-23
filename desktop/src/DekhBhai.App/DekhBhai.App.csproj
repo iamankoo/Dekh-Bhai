@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+
+    <AssemblyName>DekhBhai</AssemblyName>
+    <AssemblyTitle>Dekh Bhai</AssemblyTitle>
+    <Product>Dekh Bhai</Product>
+    <Company>Aniket</Company>
+    <Version>2.0.0</Version>
+    <ApplicationIcon>Assets\DekhBhai.ico</ApplicationIcon>
+
+    <!-- Deployment-safe by construction: FFmpeg native DLLs below are copied into both the
+         build output AND the publish output (see ItemGroup further down), so a published/
+         installed copy of this app never needs FFmpegNativeDir to exist at runtime - only at
+         build time, on the machine building the app. See docs/development/setup.md. -->
+    <FFmpegNativeDir Condition="'$(FFmpegNativeDir)' == ''">C:\Users\iaman\AppData\Local\Microsoft\WinGet\Packages\BtbN.FFmpeg.LGPL.Shared.8.1_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1\bin</FFmpegNativeDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DekhBhai.Core\DekhBhai.Core.csproj" />
+    <PackageReference Include="QRCoder" Version="1.8.0" />
+  </ItemGroup>
+
+  <!-- FFmpeg native shared libraries: bundled as content so `dotnet publish` (and therefore the
+       MSIX package built from its output - see docs/development/packaging.md) always includes
+       them next to the exe. No FFmpeg install is required on the machine that runs the built app. -->
+  <ItemGroup Condition="Exists('$(FFmpegNativeDir)')">
+    <Content Include="$(FFmpegNativeDir)\avcodec-*.dll;$(FFmpegNativeDir)\avutil-*.dll;$(FFmpegNativeDir)\avformat-*.dll;$(FFmpegNativeDir)\avdevice-*.dll;$(FFmpegNativeDir)\avfilter-*.dll;$(FFmpegNativeDir)\swscale-*.dll;$(FFmpegNativeDir)\swresample-*.dll">
+      <Link>%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

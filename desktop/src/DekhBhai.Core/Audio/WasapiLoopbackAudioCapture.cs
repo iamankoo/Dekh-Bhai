@@ -1,0 +1,97 @@
+using NAudio.Wave;
+
+namespace DekhBhai.Core.Audio;
+
+/// <summary>
+/// Captures whatever the host is currently playing through its default output device
+/// (speakers/headphones) via WASAPI loopback - real system audio, not the microphone.
+/// </summary>
+public sealed class WasapiLoopbackAudioCapture : IAudioCapture
+{
+    public event EventHandler<AudioChunk>? ChunkCaptured;
+    public event EventHandler<string>? CaptureError;
+
+    public bool IsCapturing { get; private set; }
+
+    private WasapiLoopbackCapture? _capture;
+
+    public void Start()
+    {
+        if (IsCapturing) return;
+
+        _capture = new WasapiLoopbackCapture();
+        _capture.DataAvailable += OnDataAvailable;
+        _capture.RecordingStopped += OnRecordingStopped;
+
+        try
+        {
+            _capture.StartRecording();
+            IsCapturing = true;
+        }
+        catch (Exception ex)
+        {
+            CaptureError?.Invoke(this, $"failed to start system audio loopback: {ex.Message}");
+            _capture.Dispose();
+            _capture = null;
+        }
+    }
+
+    public void Stop()
+    {
+        if (!IsCapturing) return;
+        IsCapturing = false;
+        _capture?.StopRecording();
+    }
+
+    private void OnDataAvailable(object? sender, WaveInEventArgs e)
+    {
+        if (_capture is null || e.BytesRecorded == 0) return;
+
+        var format = _capture.WaveFormat;
+        int bytesPerSample = format.BitsPerSample / 8;
+        int sampleCount = e.BytesRecorded / bytesPerSample;
+        var samples = new float[sampleCount];
+
+        if (format.Encoding == WaveFormatEncoding.IeeeFloat && bytesPerSample == 4)
+        {
+            Buffer.BlockCopy(e.Buffer, 0, samples, 0, e.BytesRecorded);
+        }
+        else if (format.Encoding == WaveFormatEncoding.Pcm && bytesPerSample == 2)
+        {
+            for (int i = 0; i < sampleCount; i++)
+            {
+                short s = BitConverter.ToInt16(e.Buffer, i * 2);
+                samples[i] = s / 32768f;
+            }
+        }
+        else
+        {
+            // Uncommon device mix format - drop rather than emit garbage samples.
+            return;
+        }
+
+        ChunkCaptured?.Invoke(this, new AudioChunk
+        {
+            Samples = samples,
+            SampleRate = format.SampleRate,
+            Channels = format.Channels,
+            Timestamp = DateTimeOffset.UtcNow,
+        });
+    }
+
+    private void OnRecordingStopped(object? sender, StoppedEventArgs e)
+    {
+        if (e.Exception is not null)
+        {
+            CaptureError?.Invoke(this, $"system audio loopback stopped unexpectedly: {e.Exception.Message}");
+        }
+        IsCapturing = false;
+    }
+
+    public void Dispose()
+    {
+        Stop();
+        _capture?.Dispose();
+        _capture = null;
+    }
+}

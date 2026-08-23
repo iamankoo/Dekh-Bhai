@@ -1,0 +1,38 @@
+# .NET
+desktop/**/bin/
+desktop/**/obj/
+*.user
+*.suo
+
+# Node
+signaling/node_modules/
+npm-debug.log*
+
+# Env
+.env
+.env.*
+!.env.example
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vs/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Logs
+*.log
+logs/
+
+# Build/packaging outputs and signing material - never commit a private key
+packaging/publish/
+packaging/msix/layout/
+packaging/msix/*.pfx
+packaging/msix/*.cer
+dist/
+
+# Claude project instructions (never committed)
+CLAUDE.md

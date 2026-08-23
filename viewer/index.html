@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Dekh Bhai — Viewer</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="bar">
+    <span class="brand">Dekh Bhai</span>
+    <span class="bar-right">
+      <span id="elapsed" class="elapsed"></span>
+      <span id="status" class="status status--connecting">Connecting…</span>
+    </span>
+  </header>
+
+  <main class="stage">
+    <video id="remoteVideo" autoplay playsinline></video>
+    <div id="placeholder" class="placeholder">
+      <p id="placeholderText">Connecting to Dekh Bhai…</p>
+    </div>
+  </main>
+
+  <footer class="controls">
+    <button id="fullscreenBtn" disabled>Fullscreen</button>
+    <span id="statsLine" class="stats"></span>
+  </footer>
+
+  <script src="/config.js"></script>
+  <script src="/viewer.js"></script>
+</body>
+</html>
