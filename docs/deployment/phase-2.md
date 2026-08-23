@@ -38,9 +38,14 @@ cross-origin; `viewer/config.js` is the one file that tells it which origin to u
 
 ## 1. Deploying the viewer to Vercel
 
-**Status: configuration prepared and verified locally in this session (see "What was verified"
-below); not yet deployed to an actual Vercel project** - this repository has no Vercel account
-attached, and the Vercel CLI is not installed/authenticated in this environment.
+**Status: deployed.** Live at **https://viewer-theta-ashy.vercel.app** (Vercel project
+`iamankoos-projects/viewer`, root directory `viewer/`). Confirmed via `curl`: `/` returns `200`
+over HTTPS, `/config.js` is served, and `/v/testSession123` correctly rewrites to `index.html`
+while keeping the path intact. `DEKHBHAI_SIGNALING_ORIGIN` in `viewer/config.js` is still the
+default empty value - **it must be set to signaling's real origin once section 2 below is done**,
+then redeployed (`cd viewer && vercel --prod --yes`), before any real session will connect. Until
+then this deployment can serve the page but cannot reach a signaling server (there isn't one to
+reach yet).
 
 ### What changed to make this possible
 
@@ -112,7 +117,12 @@ attached in the Vercel project's Domains settings the same way as any other Verc
 
 ## 2. Deploying the signaling server
 
-**Status: not deployed.** Deliberately kept as an unmodified, long-lived Node.js process rather
+**Status: not deployed - blocked on hosting access.** This machine has no account or CLI
+credentials for any persistent-process host (Fly.io, Render, Railway, a VPS, AWS/GCP/Azure, etc.)
+- unlike GitHub and Vercel, which were already authenticated here. Creating a new account on any
+of these requires an interactive signup step (email verification, OAuth, or payment details) that
+only the repository owner can complete. Once such an account/token exists, the steps below are
+otherwise ready to run as-is. Deliberately kept as an unmodified, long-lived Node.js process rather
 than ported to Vercel's WebSocket model - see
 `docs/architecture/phase-2-technology-decision.md` for why (duration caps far shorter than the
 product's 1-hour/5-hour/Until-I-Stop sessions, and no shared memory across function instances,
@@ -380,9 +390,12 @@ scripts\build-msix.ps1
 Once the viewer is actually deployed to Vercel and signaling is deployed per section 2, verify
 in this order (do not claim any later item works until the ones before it are confirmed):
 
-1. [ ] Vercel viewer URL loads over HTTPS (`https://<project>.vercel.app/`).
+1. [x] Vercel viewer URL loads over HTTPS - confirmed via `curl`:
+       https://viewer-theta-ashy.vercel.app/ returns `200`, and `/v/testSession123` correctly
+       rewrites to `index.html` with the path intact.
 2. [ ] `viewer/config.js` on the deployed site has `DEKHBHAI_SIGNALING_ORIGIN` set to the real
-       signaling domain (view page source / `curl https://<project>.vercel.app/config.js`).
+       signaling domain (view page source / `curl https://<project>.vercel.app/config.js`) - still
+       the empty default; blocked on signaling actually being deployed (see section 2 above).
 3. [ ] A real Dekh Bhai session (desktop app pointed at the deployed signaling URL via
        `DEKHBHAI_SIGNALING_WS_URL`) generates a share URL pointing at the Vercel domain
        (`DEKHBHAI_VIEWER_BASE_URL`), and the QR code encodes the identical URL.

@@ -34,5 +34,8 @@ packaging/msix/*.pfx
 packaging/msix/*.cer
 dist/
 
+# Vercel CLI project link (local machine/account-specific)
+.vercel
+
 # Claude project instructions (never committed)
 CLAUDE.md

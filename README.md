@@ -20,6 +20,11 @@ been deployed to a real public domain or tested across different networks/mobile
 `docs/deployment/phase-2.md` for the deployment procedure (domain/HTTPS, coturn, environment
 variables) needed to close those gaps.
 
+**Live deployment status**: the viewer is deployed to Vercel at
+https://viewer-theta-ashy.vercel.app (HTTPS, verified reachable). The signaling server and TURN
+relay are **not yet deployed anywhere public** - see `docs/deployment/phase-2.md` §2-3 for exactly
+what's blocking that and the steps to finish it.
+
 ```
 Windows laptop (native capture)  --WebRTC-->  Browser viewer (any device, no install)
                                        ^
