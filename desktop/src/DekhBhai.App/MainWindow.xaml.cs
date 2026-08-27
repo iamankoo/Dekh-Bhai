@@ -16,7 +16,6 @@ public partial class MainWindow : Window
     private DateTimeOffset? _expiresAt;
     private readonly DispatcherTimer _elapsedTimer;
     private bool _isInBackgroundMode;
-    private bool _wasMinimizedBeforeBackground;
 
     public TaskbarIcon? TrayIcon { get; set; }
 
@@ -245,14 +244,19 @@ public partial class MainWindow : Window
     private void EnterBackgroundMode()
     {
         _isInBackgroundMode = true;
-        _wasMinimizedBeforeBackground = WindowState == WindowState.Minimized;
 
         var app = (App)Application.Current;
         app.SetTrayIconVisible(true);
         app.UpdateTrayStopMenuItem(true);
 
-        MinimizeAndExcludeFromCapture();
-        HideFromTaskbar();
+        // Exclude the app's own window from any screen capture (ours or anyone else's) the
+        // moment sharing goes live, so the host UI is never visible to a viewer - but do NOT
+        // minimize or hide it here. SetWindowDisplayAffinity works regardless of window state,
+        // so the popup can stay open showing the share link/QR until the user minimizes it
+        // themselves; only that user action (handled by MainWindow_StateChanged) tucks it into
+        // the tray.
+        var hwnd = new WindowInteropHelper(this).Handle;
+        WindowCaptureExclusion.Exclude(hwnd);
     }
 
     private void ExitBackgroundMode()
@@ -264,14 +268,7 @@ public partial class MainWindow : Window
         app.UpdateTrayStopMenuItem(false);
 
         ShowInTaskbar = true;
-        if (_wasMinimizedBeforeBackground)
-        {
-            WindowState = WindowState.Minimized;
-        }
-        else
-        {
-            WindowState = WindowState.Normal;
-        }
+        Visibility = Visibility.Visible;
     }
 
     private void HideFromTaskbar()
@@ -310,13 +307,6 @@ public partial class MainWindow : Window
             _ = _session.StopAsync();
         }
         Application.Current.Shutdown();
-    }
-
-    private void MinimizeAndExcludeFromCapture()
-    {
-        var hwnd = new WindowInteropHelper(this).Handle;
-        WindowCaptureExclusion.Exclude(hwnd);
-        WindowState = WindowState.Minimized;
     }
 
     private void RestoreWindow()
