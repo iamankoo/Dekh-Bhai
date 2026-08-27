@@ -48,6 +48,11 @@ package once, the same as any self-signed sideloaded app).
 # One-time (see "Runtime requirements" below): .NET 8 SDK, a local FFmpeg 8.x shared build, and
 # the Windows 10.0.26100 SDK (for makeappx.exe/signtool.exe) all need to be present on the build
 # machine - none of that is required on the machine the built package gets *installed* on.
+
+# The signing certificate's password is required and has no hardcoded default (a hardcoded
+# signing-key password was found and removed during Phase 2 hardening - see
+# docs/architecture/phase-2-technology-decision.md). Set it once per shell session:
+$env:DEKHBHAI_PFX_PASSWORD = "<the password the .pfx below was generated with>"
 scripts\build-msix.ps1
 ```
 

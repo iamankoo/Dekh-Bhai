@@ -10,28 +10,34 @@ namespace DekhBhai.Core.Rtc;
 /// class produces - media flows directly over WebRTC to each viewer. One capture/encode
 /// pipeline is shared across every viewer - see <see cref="SendVideo"/>/<see cref="SendAudio"/> -
 /// the screen is never captured or encoded per-viewer.
+/// Also manages a single control peer connection for remote desktop input.
 /// </summary>
 public sealed class WebRtcHost : IAsyncDisposable
 {
     private static readonly VideoFormat VideoFormatVp8 = new(VideoCodecsEnum.VP8, 100);
     private static readonly AudioFormat AudioFormatOpus = new(AudioCodecsEnum.OPUS, 111, clockRate: 48000, channelCount: 2);
 
-    /// <summary>
-    /// A disconnected (but not yet failed/closed) peer is kept around for this long before being
-    /// treated as truly gone - WebRTC connections routinely flicker through "disconnected" during
-    /// a brief network hiccup, and dropping the viewer immediately would defeat the point of
-    /// tolerating short outages (see the Phase 2 brief's "network recovery" requirement).
-    /// </summary>
     private static readonly TimeSpan DisconnectedGracePeriod = TimeSpan.FromSeconds(12);
 
     public event Action<int>? ViewerCountChanged;
     public event Action<string, RTCPeerConnectionState>? ViewerConnectionStateChanged;
     public event Action<string>? Error;
 
+    // Control events
+    public event Action<string>? ControlConnected;
+    public event Action<string>? ControlDisconnected;
+    public event Action<ControlCommand>? ControlCommandReceived;
+
     private readonly SignalingClient _signaling;
     private readonly ConcurrentDictionary<string, RTCPeerConnection> _viewers = new();
     private readonly ConcurrentDictionary<string, Timer> _disconnectGraceTimers = new();
     private IReadOnlyList<RTCIceServer> _iceServers = Array.Empty<RTCIceServer>();
+
+    // Control connection (single controller at a time)
+    private RTCPeerConnection? _controlPc;
+    private string? _controlSessionId;
+    private RTCDataChannel? _controlDataChannel;
+    private Timer? _controlDisconnectTimer;
 
     public WebRtcHost(SignalingClient signaling)
     {
@@ -40,11 +46,17 @@ public sealed class WebRtcHost : IAsyncDisposable
         _signaling.ViewerLeft += OnViewerLeft;
         _signaling.AnswerReceived += OnAnswerReceived;
         _signaling.IceCandidateReceived += OnIceCandidateReceived;
+
+        // Control signaling events
+        _signaling.ControlAnswerReceived += OnControlAnswerReceived;
+        _signaling.ControlIceCandidateReceived += OnControlIceCandidateReceived;
+        _signaling.ControlViewerJoined += OnControlViewerJoined;
+        _signaling.ControlViewerLeft += OnControlViewerLeft;
     }
 
     public int ViewerCount => _viewers.Count;
+    public bool HasControlConnection => _controlPc != null && _controlPc.connectionState == RTCPeerConnectionState.connected;
 
-    /// <summary>Must be called (with the session's server-issued ICE servers) before any viewer joins.</summary>
     public void SetIceServers(IReadOnlyList<IceServerPayload> iceServers)
     {
         _iceServers = iceServers
@@ -56,6 +68,10 @@ public sealed class WebRtcHost : IAsyncDisposable
             })
             .ToList();
     }
+
+    public IReadOnlyList<RTCIceServer> GetIceServers() => _iceServers;
+
+    // ========== Viewer Management ==========
 
     private async void OnViewerJoined(string viewerId, int viewerCount)
     {
@@ -100,14 +116,11 @@ public sealed class WebRtcHost : IAsyncDisposable
         switch (state)
         {
             case RTCPeerConnectionState.disconnected:
-                // Don't tear down immediately - give a brief network hiccup a chance to recover.
                 ScheduleDisconnectGraceTimeout(viewerId);
                 break;
-
             case RTCPeerConnectionState.connected:
                 CancelDisconnectGraceTimeout(viewerId);
                 break;
-
             case RTCPeerConnectionState.failed:
             case RTCPeerConnectionState.closed:
                 CancelDisconnectGraceTimeout(viewerId);
@@ -163,6 +176,173 @@ public sealed class WebRtcHost : IAsyncDisposable
         }
     }
 
+    // ========== Control Connection Management ==========
+
+    /// <summary>
+    /// Called when control viewer joins - creates the control peer connection and sends offer.
+    /// </summary>
+    public async Task CreateControlConnectionAsync(string controlSessionId, IReadOnlyList<RTCIceServer> iceServers)
+    {
+        _controlSessionId = controlSessionId;
+        _iceServers = iceServers;
+
+        try
+        {
+            var config = new RTCConfiguration { iceServers = _iceServers.ToList() };
+            _controlPc = new RTCPeerConnection(config);
+
+            // Create data channel for control commands
+            _controlDataChannel = await _controlPc.createDataChannel("control", new RTCDataChannelInit { ordered = true });
+            SetupControlDataChannel(_controlDataChannel);
+
+            _controlPc.onicecandidate += candidate =>
+            {
+                if (candidate is null) return;
+                _ = _signaling.SendControlIceCandidateAsync(_controlSessionId!, new IceCandidatePayload
+                {
+                    Candidate = candidate.candidate,
+                    SdpMid = candidate.sdpMid,
+                    SdpMLineIndex = candidate.sdpMLineIndex,
+                });
+            };
+
+            _controlPc.onconnectionstatechange += state => HandleControlConnectionStateChange(state);
+
+            var offer = _controlPc.createOffer(null);
+            await _controlPc.setLocalDescription(offer);
+            await _signaling.SendControlOfferAsync(_controlSessionId, offer.sdp);
+        }
+        catch (Exception ex)
+        {
+            Error?.Invoke($"failed to create control connection: {ex.Message}");
+        }
+    }
+
+    private void SetupControlDataChannel(RTCDataChannel dc)
+    {
+        dc.onopen += () =>
+        {
+            ControlConnected?.Invoke(_controlSessionId!);
+            CancelControlDisconnectTimer();
+        };
+
+        dc.onclose += () =>
+        {
+            ControlDisconnected?.Invoke(_controlSessionId!);
+            ScheduleControlDisconnectCleanup();
+        };
+
+        dc.onmessage += new SIPSorcery.Net.OnDataChannelMessageDelegate((RTCDataChannel dc, SIPSorcery.Net.DataChannelPayloadProtocols protocol, byte[] data) =>
+        {
+            try
+            {
+                var json = System.Text.Encoding.UTF8.GetString(data);
+                var command = System.Text.Json.JsonSerializer.Deserialize<ControlCommand>(json);
+                if (command != null)
+                {
+                    ControlCommandReceived?.Invoke(command);
+                }
+            }
+            catch (Exception ex)
+            {
+                Error?.Invoke($"failed to parse control command: {ex.Message}");
+            }
+        });
+
+        dc.onerror += (err) =>
+        {
+            Error?.Invoke($"control data channel error: {err}");
+        };
+    }
+
+    
+
+    private void HandleControlConnectionStateChange(RTCPeerConnectionState state)
+    {
+        switch (state)
+        {
+            case RTCPeerConnectionState.connected:
+                CancelControlDisconnectTimer();
+                break;
+            case RTCPeerConnectionState.disconnected:
+                ScheduleControlDisconnectTimer();
+                break;
+            case RTCPeerConnectionState.failed:
+            case RTCPeerConnectionState.closed:
+                CleanupControlConnection();
+                break;
+        }
+    }
+
+    private void ScheduleControlDisconnectTimer()
+    {
+        CancelControlDisconnectTimer();
+        _controlDisconnectTimer = new Timer(_ => CleanupControlConnection(), null, DisconnectedGracePeriod, Timeout.InfiniteTimeSpan);
+    }
+
+    private void CancelControlDisconnectTimer()
+    {
+        if (_controlDisconnectTimer != null)
+        {
+            _controlDisconnectTimer.Dispose();
+            _controlDisconnectTimer = null;
+        }
+    }
+
+    private void ScheduleControlDisconnectCleanup()
+    {
+        CancelControlDisconnectTimer();
+        _controlDisconnectTimer = new Timer(_ => CleanupControlConnection(), null, TimeSpan.FromSeconds(2), Timeout.InfiniteTimeSpan);
+    }
+
+    private void CleanupControlConnection()
+    {
+        CancelControlDisconnectTimer();
+        if (_controlPc != null)
+        {
+            _controlPc.close();
+            _controlPc = null;
+        }
+        _controlDataChannel = null;
+        _controlSessionId = null;
+    }
+
+    private void OnControlAnswerReceived(string controlSessionId, string sdp)
+    {
+        if (_controlPc != null && _controlSessionId == controlSessionId)
+        {
+            _controlPc.setRemoteDescription(new RTCSessionDescriptionInit { type = RTCSdpType.answer, sdp = sdp });
+        }
+    }
+
+    private void OnControlIceCandidateReceived(string controlSessionId, IceCandidatePayload candidate)
+    {
+        if (_controlPc != null && _controlSessionId == controlSessionId)
+        {
+            _controlPc.addIceCandidate(new RTCIceCandidateInit
+            {
+                candidate = candidate.Candidate,
+                sdpMid = candidate.SdpMid,
+                sdpMLineIndex = candidate.SdpMLineIndex,
+            });
+        }
+    }
+
+    private void OnControlViewerJoined(string controlSessionId)
+    {
+        // Viewer joined - connection will be established via offer/answer
+    }
+
+    private void OnControlViewerLeft(string controlSessionId)
+    {
+        if (_controlSessionId == controlSessionId)
+        {
+            CleanupControlConnection();
+        }
+    }
+
+    // ========== Media Streaming ==========
+
     public void SendVideo(byte[] sample, uint durationRtpUnits)
     {
         foreach (var pc in _viewers.Values)
@@ -191,6 +371,10 @@ public sealed class WebRtcHost : IAsyncDisposable
         _signaling.ViewerLeft -= OnViewerLeft;
         _signaling.AnswerReceived -= OnAnswerReceived;
         _signaling.IceCandidateReceived -= OnIceCandidateReceived;
+        _signaling.ControlAnswerReceived -= OnControlAnswerReceived;
+        _signaling.ControlIceCandidateReceived -= OnControlIceCandidateReceived;
+        _signaling.ControlViewerJoined -= OnControlViewerJoined;
+        _signaling.ControlViewerLeft -= OnControlViewerLeft;
 
         foreach (var timer in _disconnectGraceTimers.Values) timer.Dispose();
         _disconnectGraceTimers.Clear();
@@ -200,6 +384,9 @@ public sealed class WebRtcHost : IAsyncDisposable
             pc.close();
         }
         _viewers.Clear();
+
+        CleanupControlConnection();
+
         await Task.CompletedTask;
     }
 }

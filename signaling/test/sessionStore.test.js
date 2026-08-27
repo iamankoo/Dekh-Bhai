@@ -122,6 +122,73 @@ test('cleanup tick flags a stale host heartbeat as host-timeout', () => {
   assert.equal(events[0].reason, 'host-timeout');
 });
 
+test('markHostDisconnected does not immediately end the session', () => {
+  const store = makeStore();
+  const session = store.createSession(fakeSocket(), 'untilStopped');
+  store.markStarting(session);
+  store.markLive(session);
+
+  store.markHostDisconnected(session);
+
+  assert.equal(session.status, SessionStatus.LIVE, 'status must not change on disconnect alone - only after the grace period elapses unresumed');
+  assert.ok(session.hostDisconnectedAt, 'disconnect timestamp should be recorded');
+});
+
+test('resumeHost reattaches a new socket within the grace period and clears the disconnect flag', () => {
+  const store = makeStore({ hostReconnectGraceMs: 20000 });
+  const session = store.createSession(fakeSocket(), 'untilStopped');
+  store.markStarting(session);
+  store.markLive(session);
+  store.markHostDisconnected(session);
+
+  const newSocket = fakeSocket();
+  const resumed = store.resumeHost(session, newSocket);
+
+  assert.equal(resumed, true);
+  assert.equal(session.hostSocket, newSocket);
+  assert.equal(session.hostDisconnectedAt, null);
+});
+
+test('resumeHost refuses to reattach once the grace period has elapsed', () => {
+  const store = makeStore({ hostReconnectGraceMs: 1000 });
+  const session = store.createSession(fakeSocket(), 'untilStopped');
+  store.markStarting(session);
+  store.markLive(session);
+  store.markHostDisconnected(session);
+  session.hostDisconnectedAt = Date.now() - 5000; // force past the grace window
+
+  const resumed = store.resumeHost(session, fakeSocket());
+
+  assert.equal(resumed, false, 'a resume attempt after the grace period must be rejected');
+});
+
+test('cleanup tick ends a session whose host never resumed within the grace period', () => {
+  const store = makeStore({ hostReconnectGraceMs: 1000 });
+  const session = store.createSession(fakeSocket(), 'untilStopped');
+  store.markStarting(session);
+  store.markLive(session);
+  store.markHostDisconnected(session);
+  session.hostDisconnectedAt = Date.now() - 5000;
+
+  const events = store.runCleanupTick();
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].reason, 'host-disconnect-timeout');
+});
+
+test('cleanup tick leaves a recently-disconnected session alone while still inside the grace period', () => {
+  const store = makeStore({ hostReconnectGraceMs: 20000 });
+  const session = store.createSession(fakeSocket(), 'untilStopped');
+  store.markStarting(session);
+  store.markLive(session);
+  store.markHostDisconnected(session); // just now - well within a 20s grace period
+
+  const events = store.runCleanupTick();
+
+  assert.equal(events.length, 0, 'a session inside its reconnect grace period must not be torn down yet');
+  assert.equal(session.status, SessionStatus.LIVE);
+});
+
 test('a STOPPED session is reaped from the store on the next cleanup tick', () => {
   const store = makeStore();
   const session = store.createSession(fakeSocket(), 'oneHour');

@@ -3,52 +3,132 @@
 A lightweight remote **screen mirroring / screen casting** application for Windows. Start a cast
 session, get a link, anyone opens it in a browser to watch the host laptop's screen live - no
 install on the viewer's side. It is not a meeting-style screen-share tool: there is no call, no
-participants list, just a live mirror of the host's screen and audio.
+participants list, no chat, just a live mirror of the host's screen and system audio.
 
-**Phase 1** (`docs/architecture/phase-1-technology-decision.md`) built the core casting engine: a
-Windows desktop host that captures the screen and system audio natively and publishes them over
-WebRTC to a plain browser viewer, plus an installable Windows build (`docs/development/packaging.md`).
+```
+Dekh Bhai host (Windows)
+  → Start Sharing → choose duration → capture + system audio start → app minimizes
+  → unique Internet-accessible viewer URL + QR code are generated
+  → another device opens/scans the URL → live video + audio streams over WebRTC
+  → host can keep using the laptop normally
+  → host stops sharing → session ends cleanly → "Sharing Stopped" / "Designed by Aniket" / "START AGAIN"
+```
 
-**Phase 2** (`docs/architecture/phase-2-technology-decision.md`) turns that engine into the actual
-product: a session model with four durations (15 min / 1 hour / 5 hours / Until I Stop) and
-server-enforced expiration, unguessable public session links (`/v/<id>`) with a QR code,
-production-capable signaling (WSS, STUN/TURN via coturn, rate limiting, message validation), a
-redesigned minimal host UI and viewer UX with reconnect handling, and multi-viewer support. **The
-Phase 2 code is implemented and covered by 28 signaling + 6 desktop unit tests, but it has not yet
-been deployed to a real public domain or tested across different networks/mobile devices** - see
-`docs/testing/test-plan.md` for exactly what's verified vs. still open, and
-`docs/deployment/phase-2.md` for the deployment procedure (domain/HTTPS, coturn, environment
-variables) needed to close those gaps.
-
-**Live deployment status**: the viewer is deployed to Vercel at
-https://viewer-theta-ashy.vercel.app, pointed at the signaling server deployed to Render at
-https://dekh-bhai-signaling.onrender.com. The signaling protocol itself is confirmed working (a
-real WebSocket connection returns a correct `session-created` response), **but the Render
-deployment is currently unreliable - roughly a quarter to three-quarters of requests fail** with
-Render's own "no-server" routing error, not an application bug. See `docs/deployment/phase-2.md`
-§2 ("Known issue") for the measurements and next step (check Render's service logs). TURN is
-**not yet deployed** - see §3.
+## How it works
 
 ```
 Windows laptop (native capture)  --WebRTC-->  Browser viewer (any device, no install)
                                        ^
-                                STUN / TURN (coturn)
+                                STUN / TURN (coturn - not yet deployed, see Known limitations)
                                        ^
                           Node signaling relay (SDP/ICE only, never media)
 ```
 
-## Quick start (development)
+- **Host app** (`desktop/`): a WPF app that captures the screen via Windows Graphics Capture and
+  system audio via WASAPI loopback, encodes VP8/Opus, and sends both directly to each viewer over
+  WebRTC. The signaling relay never sees a video/audio byte.
+- **Signaling** (`signaling/`): a small Node.js WebSocket relay that only exchanges session
+  lifecycle messages and SDP/ICE - it creates sessions, issues STUN/TURN server lists, and relays
+  offer/answer/ICE candidates between host and viewer.
+- **Viewer** (`viewer/`): a plain HTML/JS/CSS page (no build step, no install) that connects,
+  negotiates WebRTC, and plays the stream.
+
+## Installing and starting a share
+
+1. Download `DekhBhai-Setup.exe` (see "Building the installer" below to produce one) and
+   double-click it. Windows will ask for permission to install Dekh Bhai (UAC) - approve it; the
+   installer handles trusting the signing certificate and installing the app itself, no manual
+   steps required. No environment variables, config files, or other software need installing -
+   the app comes preconfigured to talk to the real production service.
+2. Launch **Dekh Bhai** from the Start Menu.
+3. Click **START SHARING**, choose a duration - **15 Minutes**, **1 Hour**, **5 Hours**, or
+   **Until I Stop** - then **START**.
+4. Dekh Bhai starts capturing your screen and system audio, minimizes itself, and shows a
+   **share link** and a **QR code** - both encode the exact same viewer URL
+   (`https://<viewer-domain>/v/<session-id>`).
+5. Send the link (or have someone scan the QR code) - anyone who opens it sees your screen live
+   in their browser, with a **Fullscreen** button and an elapsed-time indicator. No login, no
+   install on their side.
+6. Keep using your laptop normally - Dekh Bhai stays minimized and does not appear in the
+   captured video (see "What the viewer never sees" below).
+7. Click **STOP SHARING** (restore the window from the taskbar first, or find it minimized in the
+   system tray/taskbar) to end the session. The link stops working immediately. **START AGAIN**
+   starts a completely fresh session with a new id and link - nothing is reused.
+
+For a **15 Minutes / 1 Hour / 5 Hours** session, sharing stops automatically when the duration
+elapses, on both the host and every viewer, even if nobody clicks Stop.
+
+## What the viewer never sees
+
+Dekh Bhai's own UI - the share link, QR code, Stop button, elapsed timer - lives only inside the
+Dekh Bhai window, never in the captured video. There is no watermark, no floating control, no
+border drawn into the stream. The one visible thing that isn't Dekh Bhai's doing is a brief
+yellow line Windows itself draws on the physical screen when any app starts a Graphics Capture
+session (a system indicator, not part of the transmitted video - see
+`docs/architecture/phase-1-technology-decision.md` for the direct investigation proving this).
+
+## Supported devices
+
+| | |
+|---|---|
+| **Host** | Windows 10 (build 19041+) or Windows 11, x64 only. See `docs/development/packaging.md` for the exact compatibility table. |
+| **Viewer** | Any modern browser with WebRTC support. **Actually tested**: Chrome (desktop, including two simultaneous viewers on one session). An Android phone on the same Wi-Fi as the host has also been confirmed working (live video decoding) by direct manual test. Edge, Firefox, Safari, and iOS have not been tested - they should work (the viewer uses only standard `RTCPeerConnection`/media element APIs) but this is not yet claimed as verified. See `docs/testing/phase-3-release-test.md` and `docs/testing/phase-3-cross-network-test.md` for exact test coverage. |
+
+## Known limitations
+
+- **No TURN server is deployed.** Same-network connections work; a host or viewer behind a
+  symmetric NAT on a genuinely different network from its peer will currently fail to connect.
+  The code fully supports TURN (coturn, standard REST credential scheme) - only the server
+  deployment itself is missing. See `docs/testing/phase-3-cross-network-test.md`.
+- **Cross-network sharing has not been tested** (different Wi-Fi networks, mobile data, a second
+  physical device on a different network) - see the same document for exactly what was and
+  wasn't verified, and why.
+- **The production signaling deployment (Render free tier) has a rough cold-start** after ~15
+  minutes of no traffic - fully reliable once warm, but the first requests during wake-up can
+  intermittently fail. Two mitigations are prepared but not yet activated - see
+  `docs/deployment/phase-3.md`.
+- **Single primary monitor only** - no monitor picker yet.
+- **1080p only claimed, not upscaled** - streams at the host's native display resolution.
+
+## Building from source (development)
 
 ```
 cd signaling && npm install && npm start        # signaling relay + viewer host, http://localhost:8787
 cd desktop && dotnet run --project src/DekhBhai.App   # host app
 ```
 
-Click **START SHARING**, pick a duration, then **START**. Open the printed `/v/<id>` link (or scan
-the QR code) in a browser. Full setup details (FFmpeg native libs, etc.) are in
-`docs/development/setup.md`. To install a built copy of the host app instead of running from
-source, see `docs/development/packaging.md`. To point a build at a real production deployment
-instead of localhost, see `docs/deployment/phase-2.md`.
+This runs entirely locally - no production account or deployment needed. Full environment setup
+(FFmpeg native libs, Windows SDK, etc.) is in `docs/development/setup.md`. To point a locally
+built app at a real production deployment instead of localhost, see `docs/deployment/phase-2.md`.
+
+## Building the installer
+
+```powershell
+$env:DEKHBHAI_PFX_PASSWORD = "<your signing cert password>"
+scripts\build-installer.ps1
+```
+
+Produces `dist\release\DekhBhai-Setup.exe` - the one file to hand someone. It builds the MSIX
+(self-contained: bundles the .NET runtime and FFmpeg) and wraps it, plus the signing certificate,
+into a single Inno Setup installer that handles certificate trust and installation itself - see
+`docs/architecture/phase-3-technology-decision.md` ("Single-file installer") for why MSIX package
+identity is preserved rather than replaced with a plain portable exe (it's required for Windows
+Graphics Capture's border-suppression capability).
+
+To build just the raw MSIX without the installer wrapper (e.g. for development):
+`scripts\build-msix.ps1` → `dist\DekhBhai.msix`. Full detail on both, including generating your
+own signing certificate, is in `docs/development/packaging.md`.
+
+## How the production infrastructure works
+
+Three independently deployed pieces, each documented in full under `docs/deployment/`:
+
+1. **Viewer** - a static site (Vercel). No server-side code; it's the same `viewer/` files
+   deployed as-is.
+2. **Signaling** - a long-lived Node.js process (currently Render). Deliberately **not** deployed
+   to a serverless/edge platform - see `docs/architecture/phase-2-technology-decision.md` for why
+   Vercel's own WebSocket support doesn't fit this component's session-duration requirements.
+3. **TURN** (coturn) - documented, not yet deployed - see "Known limitations" above.
 
 ## Repository layout
 
@@ -57,16 +137,25 @@ instead of localhost, see `docs/deployment/phase-2.md`.
 | `desktop/` | .NET 8 solution: WPF host app + the capture/audio/media/WebRTC engine (`DekhBhai.Core`) |
 | `signaling/` | Node.js WebSocket signaling relay (session model, TURN credentials, rate limiting, SDP/ICE only - never media) + serves `viewer/` |
 | `viewer/` | Plain HTML/JS/CSS browser viewer, no build step, no install |
-| `docs/` | Architecture decisions, deployment, dev setup, test plan |
-| `scripts/` | Convenience launch scripts |
+| `tests/desktop-e2e/` | Windows UI Automation harness that drives the real installed app end to end - see its own README |
+| `docs/` | Architecture decisions, deployment, dev setup, test plans |
+| `scripts/` | Convenience launch/build scripts |
 
 ## Documentation
 
 - [`docs/architecture/phase-1-technology-decision.md`](docs/architecture/phase-1-technology-decision.md) -
-  Phase 1 stack, why, rejected alternatives, and known limitations.
+  Phase 1 stack (capture/encode/WebRTC engine), why, rejected alternatives, known limitations.
 - [`docs/architecture/phase-2-technology-decision.md`](docs/architecture/phase-2-technology-decision.md) -
-  Phase 2 session model, signaling, TURN, and security decisions, and what's still unverified.
-- [`docs/deployment/phase-2.md`](docs/deployment/phase-2.md) - how to deploy signaling/viewer/coturn
-  to a real domain, and the environment variables involved.
+  Phase 2 session model, signaling protocol, TURN, and the Vercel/signaling deployment split.
+- [`docs/architecture/phase-3-technology-decision.md`](docs/architecture/phase-3-technology-decision.md) -
+  Phase 3 hardening: Render reliability investigation, host reconnect/resume, bugs found and fixed.
+- [`docs/deployment/phase-2.md`](docs/deployment/phase-2.md) - how to deploy signaling/viewer/coturn,
+  and the environment variables involved.
+- [`docs/deployment/phase-3.md`](docs/deployment/phase-3.md) - what changed operationally in Phase 3.
 - [`docs/development/setup.md`](docs/development/setup.md) - environment setup and how to run everything.
-- [`docs/testing/test-plan.md`](docs/testing/test-plan.md) - what's been verified and how to re-verify it.
+- [`docs/development/packaging.md`](docs/development/packaging.md) - building and installing the MSIX.
+- [`docs/testing/test-plan.md`](docs/testing/test-plan.md) - Phase 1/2 verification checklist.
+- [`docs/testing/phase-3-release-test.md`](docs/testing/phase-3-release-test.md) - full installed-app
+  production test cycle results.
+- [`docs/testing/phase-3-cross-network-test.md`](docs/testing/phase-3-cross-network-test.md) - honest
+  status of cross-network/TURN testing (currently blocked - see above).

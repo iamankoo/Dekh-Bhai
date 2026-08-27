@@ -25,8 +25,20 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="1.1.0" />
     <ProjectReference Include="..\DekhBhai.Core\DekhBhai.Core.csproj" />
     <PackageReference Include="QRCoder" Version="1.8.0" />
+  </ItemGroup>
+
+  <!-- ApplicationIcon (above) only embeds this as the .exe's native Win32 icon resource - it does
+       NOT make it resolvable via a WPF pack URI. App.xaml.cs's TaskbarIcon.IconSource loads it via
+       "pack://application:,,,/Assets/DekhBhai.ico", which requires it to also be a WPF-embedded
+       Resource; without this, that BitmapImage load throws System.IO.IOException ("Cannot locate
+       resource 'assets/dekhbhai.ico'") unhandled on the UI dispatcher during App.OnStartup,
+       crashing the app on every launch (confirmed via Windows Error Reporting / .NET Runtime
+       event log on the installed MSIX build). -->
+  <ItemGroup>
+    <Resource Include="Assets\DekhBhai.ico" />
   </ItemGroup>
 
   <!-- FFmpeg native shared libraries: bundled as content so `dotnet publish` (and therefore the

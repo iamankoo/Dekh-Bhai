@@ -19,6 +19,16 @@ test('validateHostMessage rejects offer without hostToken', () => {
   assert.equal(result.ok, false);
 });
 
+test('validateHostMessage accepts a well-formed resume-session', () => {
+  const result = validateHostMessage({ type: 'resume-session', sessionId: 's1', hostToken: 't1' });
+  assert.equal(result.ok, true);
+});
+
+test('validateHostMessage rejects resume-session missing sessionId or hostToken', () => {
+  assert.equal(validateHostMessage({ type: 'resume-session', hostToken: 't1' }).ok, false);
+  assert.equal(validateHostMessage({ type: 'resume-session', sessionId: 's1' }).ok, false);
+});
+
 test('validateHostMessage rejects an unknown message type', () => {
   const result = validateHostMessage({ type: 'delete-everything' });
   assert.equal(result.ok, false);

@@ -13,17 +13,28 @@ namespace DekhBhai.Core.Rtc;
 /// </summary>
 public sealed class SignalingClient : IAsyncDisposable
 {
-    public event Action<string, string, IReadOnlyList<IceServerPayload>>? SessionCreated; // sessionId, hostToken, iceServers
-    public event Action<DateTimeOffset, DateTimeOffset?>? LiveAck; // startedAt, expiresAt (null = untilStopped)
+    public event Action<string, string, IReadOnlyList<IceServerPayload>>? SessionCreated;
+    public event Action<DateTimeOffset, DateTimeOffset?>? LiveAck;
     public event Action? SessionExpired;
-    public event Action<string>? SessionEnded; // reason
-    public event Action<string, int>? ViewerJoined; // viewerId, viewerCount
-    public event Action<string, int>? ViewerLeft; // viewerId, viewerCount
-    public event Action<string, string>? AnswerReceived; // viewerId, sdp
-    public event Action<string, IceCandidatePayload>? IceCandidateReceived; // viewerId, candidate
-    public event Action<string>? SignalingError; // reason - a recognized protocol-level error from the server
-    public event Action<string>? TransportError; // a connection-level failure (network, refused, etc.)
+    public event Action<string>? SessionEnded;
+    public event Action<string, int>? ViewerJoined;
+    public event Action<string, int>? ViewerLeft;
+    public event Action<string, string>? AnswerReceived;
+    public event Action<string, IceCandidatePayload>? IceCandidateReceived;
+    public event Action<string>? SignalingError;
+    public event Action<string>? TransportError;
     public event Action? Disconnected;
+    public event Action<IReadOnlyList<IceServerPayload>>? Resumed;
+
+    // Control session events
+    public event Action<ControlSessionInfo>? ControlSessionCreated;
+    public event Action<string>? ControlSessionAuthorized;
+    public event Action<string>? ControlSessionRevoked;
+    public event Action<List<ControlSessionInfo>>? ControlSessionsListed;
+    public event Action<string, string>? ControlAnswerReceived;
+    public event Action<string, IceCandidatePayload>? ControlIceCandidateReceived;
+    public event Action<string>? ControlViewerJoined;
+    public event Action<string>? ControlViewerLeft;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -32,37 +43,88 @@ public sealed class SignalingClient : IAsyncDisposable
     private Task? _receiveLoop;
     private string? _sessionId;
     private string? _hostToken;
+    private Uri? _signalingUri;
 
     public string? SessionId => _sessionId;
 
+    public string? LastResumeFailureReason { get; private set; }
+
     public async Task ConnectAsync(Uri signalingUri, CancellationToken ct = default)
     {
-        _socket = new ClientWebSocket();
-        _cts = new CancellationTokenSource();
+        _signalingUri = signalingUri;
+        var socket = new ClientWebSocket();
         try
         {
-            await _socket.ConnectAsync(signalingUri, ct);
+            await socket.ConnectAsync(signalingUri, ct);
         }
         catch (Exception ex)
         {
             TransportError?.Invoke(ex.Message);
             throw;
         }
-        _receiveLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token));
+        _socket = socket;
+        _cts = new CancellationTokenSource();
+        _receiveLoop = Task.Run(() => ReceiveLoopAsync(socket, _cts.Token));
     }
 
-    private async Task ReceiveLoopAsync(CancellationToken ct)
+    public async Task<bool> ReconnectAndResumeAsync(CancellationToken ct = default)
+    {
+        LastResumeFailureReason = null;
+        if (_signalingUri is null || _sessionId is null || _hostToken is null) return false;
+
+        var socket = new ClientWebSocket();
+        try
+        {
+            await socket.ConnectAsync(_signalingUri, ct);
+        }
+        catch (Exception ex)
+        {
+            TransportError?.Invoke(ex.Message);
+            return false;
+        }
+
+        _socket = socket;
+        _cts?.Cancel();
+        _cts = new CancellationTokenSource();
+        _receiveLoop = Task.Run(() => ReceiveLoopAsync(socket, _cts.Token));
+
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnResumed(IReadOnlyList<IceServerPayload> _) => tcs.TrySetResult(true);
+        void OnError(string reason)
+        {
+            LastResumeFailureReason = reason;
+            tcs.TrySetResult(false);
+        }
+        Resumed += OnResumed;
+        SignalingError += OnError;
+        try
+        {
+            await SendResumeSessionAsync(ct);
+            return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(8), ct);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+        finally
+        {
+            Resumed -= OnResumed;
+            SignalingError -= OnError;
+        }
+    }
+
+    private async Task ReceiveLoopAsync(ClientWebSocket socketForThisLoop, CancellationToken ct)
     {
         var buffer = new byte[16 * 1024];
         try
         {
-            while (_socket is { State: WebSocketState.Open } && !ct.IsCancellationRequested)
+            while (socketForThisLoop.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
                 using var ms = new MemoryStream();
                 WebSocketReceiveResult result;
                 do
                 {
-                    result = await _socket.ReceiveAsync(buffer, ct);
+                    result = await socketForThisLoop.ReceiveAsync(buffer, ct);
                     if (result.MessageType == WebSocketMessageType.Close) return;
                     ms.Write(buffer, 0, result.Count);
                 } while (!result.EndOfMessage);
@@ -71,14 +133,17 @@ public sealed class SignalingClient : IAsyncDisposable
                 Dispatch(text);
             }
         }
-        catch (OperationCanceledException) { /* normal shutdown */ }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             TransportError?.Invoke(ex.Message);
         }
         finally
         {
-            Disconnected?.Invoke();
+            if (ReferenceEquals(_socket, socketForThisLoop))
+            {
+                Disconnected?.Invoke();
+            }
         }
     }
 
@@ -108,6 +173,9 @@ public sealed class SignalingClient : IAsyncDisposable
                 var expiresAt = msg.ExpiresAt is { } exp ? DateTimeOffset.FromUnixTimeMilliseconds(exp) : (DateTimeOffset?)null;
                 LiveAck?.Invoke(startedAt, expiresAt);
                 break;
+            case "resumed" when msg.SessionId is not null:
+                Resumed?.Invoke(msg.IceServers ?? new List<IceServerPayload>());
+                break;
             case "session-expired":
                 SessionExpired?.Invoke();
                 break;
@@ -125,6 +193,36 @@ public sealed class SignalingClient : IAsyncDisposable
                 break;
             case "ice-candidate" when msg is { ViewerId: not null, Candidate: not null }:
                 IceCandidateReceived?.Invoke(msg.ViewerId, msg.Candidate);
+                break;
+            case "control-session-created" when msg is { ControlSessionId: not null, PairingCode: not null, ControlToken: not null }:
+                ControlSessionCreated?.Invoke(new ControlSessionInfo
+                {
+                    ControlSessionId = msg.ControlSessionId,
+                    PairingCode = msg.PairingCode,
+                    ControlToken = msg.ControlToken,
+                    ExpiresAt = msg.ExpiresAt,
+                });
+                break;
+            case "control-session-authorized" when msg.ControlSessionId is not null:
+                ControlSessionAuthorized?.Invoke(msg.ControlSessionId);
+                break;
+            case "control-session-revoked" when msg.ControlSessionId is not null:
+                ControlSessionRevoked?.Invoke(msg.ControlSessionId);
+                break;
+            case "control-sessions-list" when msg.ControlSessions is not null:
+                ControlSessionsListed?.Invoke(msg.ControlSessions);
+                break;
+            case "control-answer" when msg is { ControlSessionId: not null, Sdp: not null }:
+                ControlAnswerReceived?.Invoke(msg.ControlSessionId, msg.Sdp);
+                break;
+            case "control-ice-candidate" when msg is { ControlSessionId: not null, Candidate: not null }:
+                ControlIceCandidateReceived?.Invoke(msg.ControlSessionId, msg.Candidate);
+                break;
+            case "control-viewer-joined" when msg.ControlSessionId is not null:
+                ControlViewerJoined?.Invoke(msg.ControlSessionId);
+                break;
+            case "control-viewer-left" when msg.ControlSessionId is not null:
+                ControlViewerLeft?.Invoke(msg.ControlSessionId);
                 break;
             case "error":
                 SignalingError?.Invoke(msg.Reason ?? "unknown signaling error");
@@ -144,11 +242,33 @@ public sealed class SignalingClient : IAsyncDisposable
     public Task SendStopSessionAsync(CancellationToken ct = default) =>
         SendAsync(new SignalingMessage { Type = "stop-session", HostToken = _hostToken }, ct);
 
+    public Task SendResumeSessionAsync(CancellationToken ct = default) =>
+        SendAsync(new SignalingMessage { Type = "resume-session", SessionId = _sessionId, HostToken = _hostToken }, ct);
+
     public Task SendOfferAsync(string viewerId, string sdp, CancellationToken ct = default) =>
         SendAsync(new SignalingMessage { Type = "offer", ViewerId = viewerId, Sdp = sdp, HostToken = _hostToken }, ct);
 
     public Task SendIceCandidateAsync(string viewerId, IceCandidatePayload candidate, CancellationToken ct = default) =>
         SendAsync(new SignalingMessage { Type = "ice-candidate", ViewerId = viewerId, Candidate = candidate, HostToken = _hostToken }, ct);
+
+    // Control session methods
+    public Task SendCreateControlSessionAsync(CancellationToken ct = default) =>
+        SendAsync(new SignalingMessage { Type = "create-control-session", HostToken = _hostToken }, ct);
+
+    public Task SendAuthorizeControlSessionAsync(string controlSessionId, CancellationToken ct = default) =>
+        SendAsync(new SignalingMessage { Type = "authorize-control-session", ControlSessionId = controlSessionId, HostToken = _hostToken }, ct);
+
+    public Task SendRevokeControlSessionAsync(string controlSessionId, CancellationToken ct = default) =>
+        SendAsync(new SignalingMessage { Type = "revoke-control-session", ControlSessionId = controlSessionId, HostToken = _hostToken }, ct);
+
+    public Task SendListControlSessionsAsync(CancellationToken ct = default) =>
+        SendAsync(new SignalingMessage { Type = "list-control-sessions", HostToken = _hostToken }, ct);
+
+    public Task SendControlOfferAsync(string controlSessionId, string sdp, CancellationToken ct = default) =>
+        SendAsync(new SignalingMessage { Type = "control-offer", ControlSessionId = controlSessionId, Sdp = sdp, HostToken = _hostToken }, ct);
+
+    public Task SendControlIceCandidateAsync(string controlSessionId, IceCandidatePayload candidate, CancellationToken ct = default) =>
+        SendAsync(new SignalingMessage { Type = "control-ice-candidate", ControlSessionId = controlSessionId, Candidate = candidate, HostToken = _hostToken }, ct);
 
     private async Task SendAsync(SignalingMessage message, CancellationToken ct)
     {
@@ -174,11 +294,11 @@ public sealed class SignalingClient : IAsyncDisposable
             {
                 await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "host closed session", CancellationToken.None);
             }
-            catch { /* best-effort */ }
+            catch { }
         }
         if (_receiveLoop is not null)
         {
-            try { await _receiveLoop; } catch { /* already handled/logged */ }
+            try { await _receiveLoop; } catch { }
         }
         _socket?.Dispose();
         _cts?.Dispose();

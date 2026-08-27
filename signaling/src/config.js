@@ -16,9 +16,20 @@ function parseIntEnv(name, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function parseBoolEnv(name, fallback) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
+const isLanTest = parseBoolEnv('LAN_TEST', false);
+const lanBindHost = isLanTest ? '0.0.0.0' : '127.0.0.1';
+
 const config = {
   env: process.env.NODE_ENV || 'development',
   port: parseIntEnv('PORT', 8787),
+  bindHost: lanBindHost,
+  isLanTest,
 
   // ICE / TURN
   stunUrls: (process.env.STUN_URLS || 'stun:stun.l.google.com:19302')
@@ -34,6 +45,12 @@ const config = {
   hostHeartbeatIntervalMs: parseIntEnv('HOST_HEARTBEAT_INTERVAL_MS', 15000),
   hostHeartbeatTimeoutMs: parseIntEnv('HOST_HEARTBEAT_TIMEOUT_MS', 45000),
   cleanupIntervalMs: parseIntEnv('CLEANUP_INTERVAL_MS', 10000),
+
+  // How long a session survives its host's TCP connection dropping before being torn down, to
+  // give a genuine network blip (or a Render free-tier idle-wake hiccup) a chance to reconnect
+  // and resume rather than instantly ending the session and kicking every viewer - see
+  // docs/architecture/phase-3-technology-decision.md ("Host reconnect / resume-session").
+  hostReconnectGraceMs: parseIntEnv('HOST_RECONNECT_GRACE_MS', 20000),
 
   // Basic per-connection rate limiting (messages per window)
   rateLimitWindowMs: parseIntEnv('RATE_LIMIT_WINDOW_MS', 1000),

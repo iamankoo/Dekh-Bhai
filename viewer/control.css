@@ -1,0 +1,186 @@
+/* Control Viewer Specific Styles */
+
+.touch-overlay {
+    position: absolute;
+    inset: 0;
+    background: transparent;
+    touch-action: none;
+    z-index: 10;
+}
+
+.touch-overlay:not([hidden]) {
+    display: block;
+}
+
+.control-btn {
+    background: rgba(22, 24, 29, 0.9);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.9rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    min-width: 60px;
+    touch-action: manipulation;
+}
+
+.control-btn:not(:disabled):active {
+    background: rgba(44, 48, 56, 0.95);
+}
+
+.control-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.control-btn.keyboard-btn {
+    position: absolute;
+    bottom: 1rem;
+    right: 1rem;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    padding: 0;
+    font-size: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+}
+
+.control-group {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.danger-btn {
+    background: rgba(229, 72, 77, 0.9);
+    border-color: var(--danger);
+    color: white;
+}
+
+.danger-btn:not(:disabled):active {
+    background: rgba(229, 72, 77, 1);
+}
+
+/* Keyboard Modal */
+.keyboard-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    z-index: 1000;
+    padding: 1rem;
+}
+
+.keyboard-container {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px 12px 0 0;
+    width: 100%;
+    max-width: 500px;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.keyboard-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+}
+
+.close-btn {
+    background: none;
+    border: none;
+    color: var(--text);
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.keyboard-layout {
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.keyboard-row {
+    display: flex;
+    gap: 0.35rem;
+    justify-content: center;
+}
+
+.key-btn {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.6rem 0.5rem;
+    font-size: 0.85rem;
+    min-width: 40px;
+    min-height: 44px;
+    cursor: pointer;
+    touch-action: manipulation;
+    flex: 0 0 auto;
+}
+
+.key-btn:active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+}
+
+.key-btn.wide {
+    flex-grow: 1;
+    max-width: 120px;
+}
+
+.key-btn.extra-wide {
+    flex-grow: 1;
+    max-width: 200px;
+}
+
+.key-btn.modifier.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+}
+
+/* Mobile optimizations */
+@media (max-width: 420px) {
+    .control-btn {
+        padding: 0.5rem 0.7rem;
+        font-size: 0.8rem;
+        min-width: 50px;
+    }
+    
+    .key-btn {
+        min-height: 48px;
+        padding: 0.7rem 0.4rem;
+        font-size: 0.8rem;
+    }
+    
+    .keyboard-container {
+        max-height: 60vh;
+    }
+}
+
+@media (max-height: 420px) and (orientation: landscape) {
+    .keyboard-modal {
+        align-items: center;
+    }
+    
+    .keyboard-container {
+        max-height: 80vh;
+        border-radius: 12px;
+    }
+}

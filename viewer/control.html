@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Dekh Bhai — Remote Control</title>
+<link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/control.css" />
+</head>
+<body>
+  <header class="bar">
+    <span class="brand">Dekh Bhai — Control</span>
+    <span class="bar-right">
+      <span id="elapsed" class="elapsed"></span>
+      <span id="status" class="status status--connecting">Connecting…</span>
+    </span>
+  </header>
+
+  <main class="stage">
+    <video id="remoteVideo" autoplay playsinline></video>
+    <div id="placeholder" class="placeholder">
+      <p id="placeholderText">Connecting to Dekh Bhai…</p>
+    </div>
+    <button id="unmuteBtn" class="unmute-btn" hidden>🔇 Tap for sound</button>
+    
+    <!-- Touch overlay for mouse control -->
+    <div id="touchOverlay" class="touch-overlay" hidden></div>
+    
+    <!-- On-screen keyboard button -->
+    <button id="keyboardBtn" class="control-btn keyboard-btn" hidden>⌨</button>
+  </main>
+
+  <footer class="controls">
+    <div class="control-group">
+      <button id="leftClickBtn" class="control-btn" hidden>Left</button>
+      <button id="rightClickBtn" class="control-btn" hidden>Right</button>
+    </div>
+    <span id="statsLine" class="stats"></span>
+    <div class="control-group">
+      <button id="fullscreenBtn" disabled>Fullscreen</button>
+      <button id="disconnectBtn" class="danger-btn">Disconnect</button>
+    </div>
+  </footer>
+
+  <!-- Virtual keyboard modal -->
+  <div id="keyboardModal" class="keyboard-modal" hidden>
+    <div class="keyboard-container">
+      <div class="keyboard-header">
+        <span>Virtual Keyboard</span>
+        <button id="closeKeyboardBtn" class="close-btn">×</button>
+      </div>
+      <div id="keyboardLayout" class="keyboard-layout"></div>
+    </div>
+  </div>
+
+  <script src="/config.js"></script>
+  <script src="/control.js"></script>
+</body>
+</html>

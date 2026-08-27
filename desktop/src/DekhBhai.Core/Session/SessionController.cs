@@ -1,5 +1,6 @@
 using DekhBhai.Core.Audio;
 using DekhBhai.Core.Capture;
+using DekhBhai.Core.Input;
 using DekhBhai.Core.Media;
 using DekhBhai.Core.Rtc;
 
@@ -12,8 +13,8 @@ namespace DekhBhai.Core.Session;
 /// swapped, or extended without changing the media engine.
 ///
 /// Session lifecycle mirrors the server's own state machine (signaling/src/sessionStateMachine.js):
-/// create-session -&gt; (capture/audio start locally) -&gt; host-live -&gt; heartbeat while Live -&gt;
-/// stop-session | session-expired -&gt; full local teardown. The server is authoritative for
+/// create-session -> (capture/audio start locally) -> host-live -> heartbeat while Live ->
+/// stop-session | session-expired -> full local teardown. The server is authoritative for
 /// expiration and for whether the session still exists at all - this class never assumes a
 /// fixed-duration session is still valid just because its own local timer hasn't fired.
 /// </summary>
@@ -22,14 +23,25 @@ public sealed class SessionController : IAsyncDisposable
     public event Action<SessionState, SessionStopReason?>? StateChanged;
     public event Action<int>? ViewerCountChanged;
     public event Action<string>? ShareUrlReady;
-    public event Action<DateTimeOffset, DateTimeOffset?>? SessionTimingReady; // startedAt, expiresAt
+    public event Action<string>? ControlUrlReady;
+    public event Action<DateTimeOffset, DateTimeOffset?>? SessionTimingReady;
     public event Action<string>? CaptureStatusChanged;
     public event Action<string>? AudioStatusChanged;
+    public event Action<string>? SignalingStatusChanged;
+
+    // Control session events
+    public event Action<string, string>? ControlSessionCreated; // controlSessionId, pairingCode
+    public event Action<string>? ControlSessionAuthorized;
+    public event Action<string>? ControlSessionRevoked;
+    public event Action<string>? ControlSessionConnected;
+    public event Action<string>? ControlSessionDisconnected;
+    public event Action<List<ControlSessionInfo>>? ControlSessionsListed;
 
     public SessionState State { get; private set; } = SessionState.Idle;
 
     private readonly Uri _signalingWsUri;
     private readonly Uri _viewerBaseHttpUri;
+    private readonly string _lanIp;
 
     private IScreenCapture? _capture;
     private IAudioCapture? _systemAudio;
@@ -37,13 +49,19 @@ public sealed class SessionController : IAsyncDisposable
     private AudioEncoderPipeline? _audioPipeline;
     private SignalingClient? _signaling;
     private WebRtcHost? _webRtc;
+    private InputInjector? _inputInjector;
     private Timer? _heartbeatTimer;
     private readonly SemaphoreSlim _lifecycleLock = new(1, 1);
+    private bool _reconnecting;
 
-    public SessionController(Uri signalingWsUri, Uri viewerBaseHttpUri)
+    private static readonly int[] ReconnectDelaysSeconds = { 2, 3, 4, 5, 5 };
+    private static readonly int[] InitialConnectDelaysSeconds = { 2, 3, 5, 8, 10 };
+
+    public SessionController(Uri signalingWsUri, Uri viewerBaseHttpUri, string lanIp = "localhost")
     {
         _signalingWsUri = signalingWsUri;
         _viewerBaseHttpUri = viewerBaseHttpUri;
+        _lanIp = lanIp;
     }
 
     public async Task StartAsync(CaptureSettings captureSettings, SessionDuration duration)
@@ -62,22 +80,24 @@ public sealed class SessionController : IAsyncDisposable
                 _systemAudio = new WasapiLoopbackAudioCapture();
                 _videoPipeline = new VideoEncoderPipeline(_capture, captureSettings.TargetFramesPerSecond);
                 _audioPipeline = new AudioEncoderPipeline(_systemAudio);
-                _signaling = new SignalingClient();
 
-                var created = new TaskCompletionSource<(string sessionId, IReadOnlyList<IceServerPayload> ice)>(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-                _signaling.SessionCreated += (id, _, ice) => created.TrySetResult((id, ice));
-                _signaling.SignalingError += msg => CaptureStatusChanged?.Invoke(TranslateError(msg));
+                var (sessionId, iceServers) = await EstablishSignalingAsync(duration);
+
+                _signaling!.SignalingError += msg => CaptureStatusChanged?.Invoke(TranslateError(msg));
                 _signaling.TransportError += msg => CaptureStatusChanged?.Invoke(TranslateError(msg));
-
-                await _signaling.ConnectAsync(_signalingWsUri);
-                await _signaling.SendCreateSessionAsync(duration);
-                var (sessionId, iceServers) = await created.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
                 _webRtc = new WebRtcHost(_signaling);
                 _webRtc.SetIceServers(iceServers);
                 _webRtc.ViewerCountChanged += count => ViewerCountChanged?.Invoke(count);
                 _webRtc.Error += msg => CaptureStatusChanged?.Invoke(msg);
+
+                // Control session events
+                _webRtc.ControlConnected += OnControlConnected;
+                _webRtc.ControlDisconnected += OnControlDisconnected;
+                _webRtc.ControlCommandReceived += OnControlCommandReceived;
+
+                // Input injector for remote control
+                _inputInjector = new InputInjector(captureSettings.TargetWidth, captureSettings.TargetHeight);
 
                 _videoPipeline.EncodedSampleReady += (sample, dur) => _webRtc.SendVideo(sample, dur);
                 _videoPipeline.CaptureStateChanged += (_, evt) => ReportCaptureEvent(evt);
@@ -94,6 +114,20 @@ public sealed class SessionController : IAsyncDisposable
                 _signaling.SessionEnded += reason => _ = StopAsync(reason == "host-timeout"
                     ? SessionStopReason.FatalError
                     : SessionStopReason.UserRequested);
+                _signaling.Disconnected += OnSignalingDisconnected;
+                _signaling.Resumed += iceServers =>
+                {
+                    _webRtc?.SetIceServers(iceServers);
+                    SignalingStatusChanged?.Invoke("connected");
+                };
+
+                // Control session signaling events
+                _signaling.ControlSessionCreated += OnControlSessionCreated;
+                _signaling.ControlSessionAuthorized += OnControlSessionAuthorized;
+                _signaling.ControlSessionRevoked += OnControlSessionRevoked;
+                _signaling.ControlSessionsListed += OnControlSessionsListed;
+                _signaling.ControlViewerJoined += OnControlViewerJoined;
+                _signaling.ControlViewerLeft += OnControlViewerLeft;
 
                 _capture.Start(captureSettings);
                 _systemAudio.Start();
@@ -106,23 +140,241 @@ public sealed class SessionController : IAsyncDisposable
                 SessionTimingReady?.Invoke(startedAt, expiresAt);
                 CaptureStatusChanged?.Invoke("capturing");
                 AudioStatusChanged?.Invoke("capturing system audio");
+                SignalingStatusChanged?.Invoke("connected");
 
                 _heartbeatTimer = new Timer(
                     _ => _ = _signaling?.SendHeartbeatAsync(),
                     null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
 
                 SetState(SessionState.Live);
+
+                // Remote control was previously wired end-to-end (WebRtcHost data channel,
+                // InputInjector, the signaling ControlSession state machine, viewer/control.js)
+                // but nothing ever called CreateControlSessionAsync - so no control session, URL,
+                // or pairing code was ever produced, and the share link only ever pointed at the
+                // view-only page. Creating it automatically here (rather than behind a separate
+                // button) means every Live session is control-capable via the one link/QR the user
+                // already shares, matching the product's "share the link, they can view AND
+                // control" expectation. This does not weaken the security model: a controller
+                // still needs both the unguessable session id AND the separate pairing code
+                // embedded in this link (see OnControlSessionCreated) - the same bar the plain
+                // viewer link already sets for viewing.
+                _ = EnableRemoteControlAsync();
             }
             catch (Exception ex)
             {
                 CaptureStatusChanged?.Invoke(TranslateError(ex.Message));
                 await TearDownAsync();
-                SetState(SessionState.Idle);
+                SetState(SessionState.Error, SessionStopReason.FatalError);
             }
         }
         finally
         {
             _lifecycleLock.Release();
+        }
+    }
+
+    private async Task<(string sessionId, IReadOnlyList<IceServerPayload> iceServers)> EstablishSignalingAsync(SessionDuration duration)
+    {
+        Exception? lastError = null;
+
+        for (int attempt = 1; attempt <= InitialConnectDelaysSeconds.Length + 1; attempt++)
+        {
+            var candidate = new SignalingClient();
+            try
+            {
+                var created = new TaskCompletionSource<(string sessionId, IReadOnlyList<IceServerPayload> ice)>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                candidate.SessionCreated += (id, _, ice) => created.TrySetResult((id, ice));
+
+                CaptureStatusChanged?.Invoke(attempt == 1 ? "Connecting to Dekh Bhai..." : "Still connecting to Dekh Bhai...");
+
+                await candidate.ConnectAsync(_signalingWsUri);
+                await candidate.SendCreateSessionAsync(duration);
+                var (sessionId, iceServers) = await created.Task.WaitAsync(TimeSpan.FromSeconds(8));
+
+                _signaling = candidate;
+                return (sessionId, iceServers);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                await candidate.DisposeAsync();
+            }
+
+            if (attempt <= InitialConnectDelaysSeconds.Length)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(InitialConnectDelaysSeconds[attempt - 1]));
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("failed to establish signaling connection");
+    }
+
+    // Control session public methods
+
+    private async Task EnableRemoteControlAsync()
+    {
+        // Fire-and-forget from Start()'s caller - a control-session setup failure must never
+        // take down an otherwise-successful screen-share session, so it's swallowed here rather
+        // than propagated.
+        try
+        {
+            await CreateControlSessionAsync();
+        }
+        catch (Exception ex)
+        {
+            CaptureStatusChanged?.Invoke($"Remote control unavailable: {ex.Message}");
+        }
+    }
+
+    public async Task CreateControlSessionAsync()
+    {
+        if (_signaling == null) return;
+        await _signaling.SendCreateControlSessionAsync();
+    }
+
+    public async Task AuthorizeControlSessionAsync(string controlSessionId)
+    {
+        if (_signaling == null) return;
+        await _signaling.SendAuthorizeControlSessionAsync(controlSessionId);
+    }
+
+    public async Task RevokeControlSessionAsync(string controlSessionId)
+    {
+        if (_signaling == null) return;
+        await _signaling.SendRevokeControlSessionAsync(controlSessionId);
+    }
+
+    public async Task ListControlSessionsAsync()
+    {
+        if (_signaling == null) return;
+        await _signaling.SendListControlSessionsAsync();
+    }
+
+    // Control session signaling event handlers
+
+    private void OnControlSessionCreated(ControlSessionInfo info)
+    {
+        var baseUrl = _lanIp != "localhost" 
+            ? $"http://{_lanIp}:8787/" 
+            : _viewerBaseHttpUri.ToString();
+        
+        var controlUrl = new Uri(baseUrl.TrimEnd('/') + $"/control/{_signaling?.SessionId}?pairing={info.PairingCode}").ToString();
+        ControlSessionCreated?.Invoke(info.ControlSessionId, info.PairingCode);
+        CaptureStatusChanged?.Invoke($"Control session created. Pairing code: {info.PairingCode}");
+        ControlUrlReady?.Invoke(controlUrl);
+
+        // Authorizing immediately (rather than waiting for a separate host click) is safe here
+        // because the host's own act of starting the share is the authorization - the control
+        // session was created BY the host's own running process, using its own hostToken, in
+        // direct response to going Live. The actual access-control gate against a stranger is the
+        // pairing code embedded in controlUrl above (a second, separate secret from the session
+        // id), which the signaling server still enforces (see server.js role=control handling) -
+        // this does not skip that check, it just removes a redundant extra confirmation click for
+        // a session the host already chose to create.
+        _ = AuthorizeSilentlyAsync(info.ControlSessionId);
+    }
+
+    private async Task AuthorizeSilentlyAsync(string controlSessionId)
+    {
+        try
+        {
+            await AuthorizeControlSessionAsync(controlSessionId);
+        }
+        catch (Exception ex)
+        {
+            CaptureStatusChanged?.Invoke($"Remote control authorization failed: {ex.Message}");
+        }
+    }
+
+    private void OnControlSessionAuthorized(string controlSessionId)
+    {
+        ControlSessionAuthorized?.Invoke(controlSessionId);
+        CaptureStatusChanged?.Invoke("Control session authorized");
+    }
+
+    private void OnControlSessionRevoked(string controlSessionId)
+    {
+        ControlSessionRevoked?.Invoke(controlSessionId);
+        CaptureStatusChanged?.Invoke("Control session revoked");
+    }
+
+    private void OnControlSessionsListed(List<ControlSessionInfo> sessions)
+    {
+        ControlSessionsListed?.Invoke(sessions);
+    }
+
+    private async void OnControlViewerJoined(string controlSessionId)
+    {
+        if (_webRtc != null && _signaling != null)
+        {
+            // Get ICE servers for control connection (reuse existing)
+            await _webRtc.CreateControlConnectionAsync(controlSessionId, _webRtc.GetIceServers());
+        }
+    }
+
+    private void OnControlViewerLeft(string controlSessionId)
+    {
+        ControlSessionDisconnected?.Invoke(controlSessionId);
+        _inputInjector?.ReleaseAllKeys();
+    }
+
+    // WebRtcHost control events
+
+    private void OnControlConnected(string controlSessionId)
+    {
+        ControlSessionConnected?.Invoke(controlSessionId);
+        CaptureStatusChanged?.Invoke("Remote control connected");
+    }
+
+    private void OnControlDisconnected(string controlSessionId)
+    {
+        ControlSessionDisconnected?.Invoke(controlSessionId);
+        CaptureStatusChanged?.Invoke("Remote control disconnected");
+        _inputInjector?.ReleaseAllKeys();
+    }
+
+    private void OnControlCommandReceived(ControlCommand cmd)
+    {
+        if (_inputInjector == null) return;
+
+        try
+        {
+            switch (cmd.Type)
+            {
+                case "mouse_move":
+                    _inputInjector.InjectMouseMove(cmd.X, cmd.Y);
+                    break;
+                case "mouse_down":
+                    _inputInjector.InjectMouseDown(cmd.Button ?? "left");
+                    break;
+                case "mouse_up":
+                    _inputInjector.InjectMouseUp(cmd.Button ?? "left");
+                    break;
+                case "mouse_click":
+                    _inputInjector.InjectMouseClick(cmd.Button ?? "left");
+                    break;
+                case "mouse_double_click":
+                    _inputInjector.InjectMouseDoubleClick();
+                    break;
+                case "mouse_scroll":
+                    _inputInjector.InjectScroll(cmd.DeltaY);
+                    break;
+                case "keyboard_down":
+                    _inputInjector.InjectKeyDown(cmd.Key ?? "", cmd.Modifiers);
+                    break;
+                case "keyboard_up":
+                    _inputInjector.InjectKeyUp(cmd.Key ?? "", cmd.Modifiers);
+                    break;
+                case "text_input":
+                    _inputInjector.InjectText(cmd.Text ?? "");
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            CaptureStatusChanged?.Invoke($"Control command error: {ex.Message}");
         }
     }
 
@@ -137,13 +389,10 @@ public sealed class SessionController : IAsyncDisposable
             if (reason == SessionStopReason.UserRequested && _signaling is not null)
             {
                 try { await _signaling.SendStopSessionAsync().WaitAsync(TimeSpan.FromSeconds(3)); }
-                catch { /* best-effort - local teardown proceeds regardless */ }
+                catch { }
             }
 
             bool confirmed = await TearDownAsync();
-
-            // Post-session screen must only appear once every component has confirmed
-            // it actually stopped - never merely because Stop was requested.
             SetState(confirmed ? SessionState.Stopped : SessionState.Error, reason);
         }
         finally
@@ -152,7 +401,6 @@ public sealed class SessionController : IAsyncDisposable
         }
     }
 
-    /// <summary>Stops and releases every engine component. Returns true if shutdown is confirmed clean.</summary>
     private async Task<bool> TearDownAsync()
     {
         _heartbeatTimer?.Dispose();
@@ -166,6 +414,8 @@ public sealed class SessionController : IAsyncDisposable
 
         if (_webRtc is not null) await _webRtc.DisposeAsync();
         if (_signaling is not null) await _signaling.DisposeAsync();
+
+        _inputInjector?.Dispose();
 
         bool confirmed =
             (_capture is null || !_capture.IsCapturing) &&
@@ -181,8 +431,46 @@ public sealed class SessionController : IAsyncDisposable
         _audioPipeline = null;
         _webRtc = null;
         _signaling = null;
+        _inputInjector = null;
 
         return confirmed;
+    }
+
+    private void OnSignalingDisconnected()
+    {
+        if (State != SessionState.Live || _reconnecting) return;
+        _reconnecting = true;
+        _ = AttemptReconnectAsync();
+    }
+
+    private async Task AttemptReconnectAsync()
+    {
+        try
+        {
+            SignalingStatusChanged?.Invoke("disconnected - reconnecting...");
+            foreach (var delaySeconds in ReconnectDelaysSeconds)
+            {
+                if (State != SessionState.Live || _signaling is null) return;
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+                if (State != SessionState.Live || _signaling is null) return;
+
+                bool resumed = await _signaling.ReconnectAndResumeAsync();
+                if (resumed) return;
+
+                if (_signaling.LastResumeFailureReason is "session-ended" or "unauthorized")
+                {
+                    break;
+                }
+                SignalingStatusChanged?.Invoke("reconnect failed, retrying...");
+            }
+
+            SignalingStatusChanged?.Invoke("connection lost");
+            await StopAsync(SessionStopReason.FatalError);
+        }
+        finally
+        {
+            _reconnecting = false;
+        }
     }
 
     private void ReportCaptureEvent(CaptureEvent evt)
@@ -197,11 +485,6 @@ public sealed class SessionController : IAsyncDisposable
         if (text is not null) CaptureStatusChanged?.Invoke(text);
     }
 
-    /// <summary>
-    /// Translates low-level exception/transport text into something a normal user can act on.
-    /// Detailed diagnostics stay in the raw message passed to CaptureStatusChanged for the
-    /// diagnostics panel - this only governs the headline text.
-    /// </summary>
     private static string TranslateError(string raw)
     {
         var lower = raw.ToLowerInvariant();

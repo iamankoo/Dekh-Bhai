@@ -3,7 +3,8 @@
   "cleanUrls": false,
   "trailingSlash": false,
   "rewrites": [
-    { "source": "/v/:sessionId", "destination": "/index.html" }
+    { "source": "/v/:sessionId", "destination": "/index.html" },
+    { "source": "/control/:sessionId", "destination": "/control.html" }
   ],
   "headers": [
     {

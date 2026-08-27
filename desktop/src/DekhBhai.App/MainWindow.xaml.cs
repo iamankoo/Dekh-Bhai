@@ -4,6 +4,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using DekhBhai.Core.Capture;
 using DekhBhai.Core.Session;
+using Hardcodet.Wpf.TaskbarNotification;
 
 namespace DekhBhai.App;
 
@@ -14,15 +15,23 @@ public partial class MainWindow : Window
     private DateTimeOffset _startedAt;
     private DateTimeOffset? _expiresAt;
     private readonly DispatcherTimer _elapsedTimer;
+    private bool _isInBackgroundMode;
+    private bool _wasMinimizedBeforeBackground;
+
+    public TaskbarIcon? TrayIcon { get; set; }
 
     public MainWindow()
     {
         InitializeComponent();
 
-        _session = new SessionController(AppConfig.SignalingWsUrl, AppConfig.ViewerBaseUrl);
+        _session = new SessionController(AppConfig.SignalingWsUrl, AppConfig.ViewerBaseUrl, AppConfig.LanIp);
 
         _session.StateChanged += (state, reason) => Dispatcher.Invoke(() => OnStateChanged(state, reason));
         _session.ShareUrlReady += url => Dispatcher.Invoke(() => OnShareUrlReady(url));
+        // Fires a moment after ShareUrlReady, once the control session (mouse/keyboard access)
+        // is ready - replaces the view-only link/QR with the control-capable one so the single
+        // link the user shares/scans grants both viewing and remote control.
+        _session.ControlUrlReady += url => Dispatcher.Invoke(() => OnShareUrlReady(url));
         _session.SessionTimingReady += (startedAt, expiresAt) => Dispatcher.Invoke(() => OnSessionTimingReady(startedAt, expiresAt));
         _session.ViewerCountChanged += count => Dispatcher.Invoke(() => ViewerStatusText.Text = $"viewers: {count}");
         _session.CaptureStatusChanged += text => Dispatcher.Invoke(() =>
@@ -32,11 +41,21 @@ public partial class MainWindow : Window
             if (_session.State is SessionState.Starting) DurationStatusText.Text = text;
         });
         _session.AudioStatusChanged += text => Dispatcher.Invoke(() => AudioStatusText.Text = $"audio: {text}");
+        _session.SignalingStatusChanged += text => Dispatcher.Invoke(() => ConnectionStatusText.Text = $"signaling: {text}");
 
         _elapsedTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         _elapsedTimer.Tick += (_, _) => UpdateElapsedText();
 
         Closing += MainWindow_Closing;
+        StateChanged += MainWindow_StateChanged;
+    }
+
+    private void MainWindow_StateChanged(object? sender, EventArgs e)
+    {
+        if (WindowState == WindowState.Minimized && _isInBackgroundMode)
+        {
+            HideFromTaskbar();
+        }
     }
 
     private void DurationOption_Click(object sender, RoutedEventArgs e)
@@ -104,11 +123,49 @@ public partial class MainWindow : Window
     private void CopyLinkButton_Click(object sender, RoutedEventArgs e)
     {
         if (string.IsNullOrEmpty(ShareUrlBox.Text)) return;
-        Clipboard.SetText(ShareUrlBox.Text);
+
+        bool copied = TryCopyToClipboard(ShareUrlBox.Text);
+        CopyConfirmText.Text = copied ? "Link copied" : "Couldn't copy - try again";
+        CopyConfirmText.Foreground = new SolidColorBrush(copied
+            ? Color.FromRgb(0x3D, 0xDC, 0x84)
+            : Color.FromRgb(0xE5, 0x48, 0x4D));
         CopyConfirmText.Visibility = Visibility.Visible;
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         timer.Tick += (_, _) => { CopyConfirmText.Visibility = Visibility.Hidden; timer.Stop(); };
         timer.Start();
+    }
+
+    /// <summary>
+    /// Windows' clipboard is a single, transiently-lockable OS resource - OpenClipboard
+    /// legitimately fails with CLIPBRD_E_CANT_OPEN if another process (a clipboard manager, an
+    /// RDP session, a screen reader, etc.) holds it at that exact instant. This is a normal,
+    /// expected race, not a bug in this app - found crashing the entire application with an
+    /// unhandled COMException during Phase 3 testing (Clipboard.SetText's single-arg overload
+    /// requests a flush, which is what actually threw - see
+    /// docs/architecture/phase-3-technology-decision.md). A short retry resolves the
+    /// overwhelming majority of real occurrences; if it still fails, this must degrade to a
+    /// visible "couldn't copy" message, never crash the whole app over a copy-link click.
+    /// </summary>
+    private static bool TryCopyToClipboard(string text)
+    {
+        const int maxAttempts = 3;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                Clipboard.SetDataObject(text, copy: false); // no flush - avoids the failure point above
+                return true;
+            }
+            catch (System.Runtime.InteropServices.COMException) when (attempt < maxAttempts)
+            {
+                System.Threading.Thread.Sleep(50);
+            }
+            catch (System.Runtime.InteropServices.COMException)
+            {
+                return false;
+            }
+        }
+        return false;
     }
 
     private void OnShareUrlReady(string url)
@@ -127,8 +184,6 @@ public partial class MainWindow : Window
 
     private void UpdateElapsedText()
     {
-        // Recomputed from the server-issued startedAt every tick (never incremented locally) so
-        // the displayed time cannot drift from UI thread jitter or a missed tick.
         var elapsed = DateTimeOffset.UtcNow - _startedAt;
         if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
 
@@ -152,6 +207,7 @@ public partial class MainWindow : Window
         {
             case SessionState.Idle:
                 IdlePanel.Visibility = Visibility.Visible;
+                ExitBackgroundMode();
                 break;
 
             case SessionState.Starting:
@@ -161,10 +217,7 @@ public partial class MainWindow : Window
             case SessionState.Live:
                 LivePanel.Visibility = Visibility.Visible;
                 StopButton.IsEnabled = true;
-                ConnectionStatusText.Text = "signaling: connected";
-                // Capture engine is already running independent of this window - now hide the
-                // control UI from the captured monitor without touching the capture pipeline.
-                MinimizeAndExcludeFromCapture();
+                EnterBackgroundMode();
                 break;
 
             case SessionState.Stopping:
@@ -172,16 +225,91 @@ public partial class MainWindow : Window
                 break;
 
             case SessionState.Stopped:
+                ExitBackgroundMode();
                 RestoreWindow();
                 PostSessionPanel.Visibility = Visibility.Visible;
                 break;
 
             case SessionState.Error:
+                ExitBackgroundMode();
                 RestoreWindow();
                 DurationPanel.Visibility = Visibility.Visible;
-                DurationStatusText.Text = "Something went wrong stopping the previous session. Check diagnostics and try again.";
+                if (string.IsNullOrEmpty(DurationStatusText.Text))
+                {
+                    DurationStatusText.Text = "Something went wrong stopping the previous session. Check diagnostics and try again.";
+                }
                 break;
         }
+    }
+
+    private void EnterBackgroundMode()
+    {
+        _isInBackgroundMode = true;
+        _wasMinimizedBeforeBackground = WindowState == WindowState.Minimized;
+
+        var app = (App)Application.Current;
+        app.SetTrayIconVisible(true);
+        app.UpdateTrayStopMenuItem(true);
+
+        MinimizeAndExcludeFromCapture();
+        HideFromTaskbar();
+    }
+
+    private void ExitBackgroundMode()
+    {
+        _isInBackgroundMode = false;
+
+        var app = (App)Application.Current;
+        app.SetTrayIconVisible(false);
+        app.UpdateTrayStopMenuItem(false);
+
+        ShowInTaskbar = true;
+        if (_wasMinimizedBeforeBackground)
+        {
+            WindowState = WindowState.Minimized;
+        }
+        else
+        {
+            WindowState = WindowState.Normal;
+        }
+    }
+
+    private void HideFromTaskbar()
+    {
+        ShowInTaskbar = false;
+        Visibility = Visibility.Hidden;
+    }
+
+    private void ShowInTaskbarAndRestore()
+    {
+        ShowInTaskbar = true;
+        Visibility = Visibility.Visible;
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
+    public void RestoreFromTray()
+    {
+        ExitBackgroundMode();
+        ShowInTaskbarAndRestore();
+    }
+
+    public async void StopFromTray()
+    {
+        if (_session.State is SessionState.Live or SessionState.Starting)
+        {
+            StopButton.IsEnabled = false;
+            await _session.StopAsync();
+        }
+    }
+
+    public void ExitFromTray()
+    {
+        if (_session.State is SessionState.Live or SessionState.Starting)
+        {
+            _ = _session.StopAsync();
+        }
+        Application.Current.Shutdown();
     }
 
     private void MinimizeAndExcludeFromCapture()

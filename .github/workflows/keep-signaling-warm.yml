@@ -1,0 +1,31 @@
+name: Keep signaling warm
+
+# Render's free tier spins the signaling service down after ~15 minutes of no traffic, and the
+# subsequent cold start has a rougher-than-expected wake-up transition (measured during Phase 3 -
+# see docs/architecture/phase-3-technology-decision.md, "Render reliability investigation": a
+# fresh instance answered only 14/20 HTTP requests and 2/8 WebSocket handshakes correctly during
+# the first ~20 seconds after being woken, before becoming 100% reliable). A periodic health-check
+# ping keeps the instance from ever going idle, at the cost of a trivial number of GitHub Actions
+# minutes - this is a documented, low-risk mitigation, not a substitute for eventually moving off
+# the free tier if real traffic volume warrants it (see docs/deployment/phase-3.md).
+#
+# NOTE: this workflow has no effect until it exists on the repository's default branch on
+# GitHub - writing this file locally does not schedule anything by itself. Per the Phase 3 git
+# policy, this was intentionally not pushed automatically; commit and push it if you want the
+# schedule to actually start running.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit /health
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" https://dekh-bhai-signaling.onrender.com/health)
+          echo "signaling /health responded $code"
+          if [ "$code" != "200" ]; then
+            echo "::warning::signaling /health did not return 200 (got $code) - may be mid-cold-start or genuinely down"
+          fi

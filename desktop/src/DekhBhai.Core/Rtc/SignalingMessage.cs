@@ -49,6 +49,19 @@ public sealed class SignalingMessage
 
     [JsonPropertyName("viewerCount")]
     public int? ViewerCount { get; set; }
+
+    [JsonPropertyName("controlSessions")]
+    public List<ControlSessionInfo>? ControlSessions { get; set; }
+
+    // Control session fields
+    [JsonPropertyName("controlSessionId")]
+    public string? ControlSessionId { get; set; }
+
+    [JsonPropertyName("pairingCode")]
+    public string? PairingCode { get; set; }
+
+    [JsonPropertyName("controlToken")]
+    public string? ControlToken { get; set; }
 }
 
 public sealed class IceCandidatePayload
@@ -74,4 +87,20 @@ public sealed class IceServerPayload
 
     [JsonPropertyName("credential")]
     public string? Credential { get; set; }
+}
+
+/// <summary>Control session info from signaling server.</summary>
+public sealed class ControlSessionInfo
+{
+    [JsonPropertyName("controlSessionId")]
+    public string ControlSessionId { get; set; } = "";
+
+    [JsonPropertyName("pairingCode")]
+    public string PairingCode { get; set; } = "";
+
+    [JsonPropertyName("controlToken")]
+    public string ControlToken { get; set; } = "";
+
+    [JsonPropertyName("expiresAt")]
+    public long? ExpiresAt { get; set; }
 }

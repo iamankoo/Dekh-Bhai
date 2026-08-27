@@ -24,6 +24,7 @@ const placeholderText = document.getElementById('placeholderText');
 const videoEl = document.getElementById('remoteVideo');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
 const statsLine = document.getElementById('statsLine');
+const unmuteBtn = document.getElementById('unmuteBtn');
 
 let pc = null;
 let ws = null;
@@ -93,6 +94,7 @@ function createPeerConnection(iceServers) {
     if (videoEl.srcObject !== event.streams[0]) {
       videoEl.srcObject = event.streams[0];
       fullscreenBtn.disabled = false;
+      startPlayback();
     }
   };
 
@@ -123,6 +125,48 @@ function createPeerConnection(iceServers) {
 
   return conn;
 }
+
+/**
+ * Chrome (and most browsers) block autoplay WITH SOUND for a <video> element unless the page
+ * already has enough "media engagement" or the user has interacted with it - found during
+ * production testing to be a real, silent failure mode: play() rejects, the element stays
+ * paused, and NOTHING is rendered or audible, while RTCPeerConnection.getStats() keeps showing
+ * framesDecoded/totalSamplesReceived increasing regardless, because the underlying WebRTC decode
+ * pipeline runs independently of whether the <video> element is actually playing. getStats()
+ * alone is therefore not sufficient evidence that video/audio actually reached the screen or
+ * speakers - see docs/architecture/phase-3-technology-decision.md ("Viewer audio: getStats() is
+ * not proof of audible sound"). This tries unmuted playback first (so sound just works whenever
+ * the browser allows it), and falls back to muted autoplay - which is virtually always allowed -
+ * only if that's rejected, surfacing a one-tap "unmute" affordance so a real user gesture (which
+ * satisfies the browser's autoplay policy) can restore sound.
+ */
+async function startPlayback() {
+  videoEl.muted = false;
+  try {
+    await videoEl.play();
+    unmuteBtn.hidden = true;
+  } catch {
+    videoEl.muted = true;
+    try {
+      await videoEl.play();
+    } catch (err) {
+      console.warn('[viewer] video.play() failed even muted', err);
+    }
+    unmuteBtn.hidden = false;
+  }
+}
+
+unmuteBtn.addEventListener('click', async () => {
+  videoEl.muted = false;
+  try {
+    await videoEl.play();
+    unmuteBtn.hidden = true; // only hide once actually confirmed playing unmuted
+  } catch (err) {
+    console.warn('[viewer] unmute play() failed even from a click', err);
+    videoEl.muted = true;
+    videoEl.play().catch(() => {}); // keep at least the picture moving, muted
+  }
+});
 
 function send(message) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));

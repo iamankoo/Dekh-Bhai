@@ -161,6 +161,14 @@ connection after an idle period may time out waiting for the instance to wake.
 
 ### Known issue: this deployment is currently unreliable, not just cold-starting
 
+**Update (Phase 3)**: a longer, sustained probe (76 continuous seconds against an already-warm
+instance) came back 76/76 successful with consistent latency - this *is* ordinary cold-start
+behavior, just with a rougher multi-second wake-up transition than a clean single delay, not an
+ongoing crash loop. See `docs/architecture/phase-3-technology-decision.md` ("Render reliability
+investigation") for the full re-investigation and `docs/deployment/phase-3.md` for the two
+mitigations prepared (a keep-warm GitHub Actions ping, and upgrading off the free tier) -
+neither has been applied to the live deployment yet.
+
 Measured directly against `https://dekh-bhai-signaling.onrender.com` after deployment: repeated
 `GET /health` requests, one per second for 20 seconds continuously, returned `200` only 14/20
 times - failures were spread through the whole window, not clustered at the start the way a
@@ -320,6 +328,7 @@ Not an env var (see "Deploying the viewer to Vercel" above for why) - edit the f
 | `TURN_CREDENTIAL_TTL_SECONDS` | `3600` (default) | how long a minted TURN credential is valid |
 | `MAX_VIEWERS_PER_SESSION` | `25` (default) | raise/lower per capacity planning |
 | `HOST_HEARTBEAT_INTERVAL_MS` / `_TIMEOUT_MS` | `15000` / `45000` (defaults) | how fast a crashed/disconnected host is detected |
+| `HOST_RECONNECT_GRACE_MS` | `20000` (default) | how long a session survives its host's TCP connection dropping before being ended - added in Phase 3, see `docs/deployment/phase-3.md` |
 | `CLEANUP_INTERVAL_MS` | `10000` (default) | expiry/cleanup tick frequency |
 | `RATE_LIMIT_WINDOW_MS` / `_MAX_MESSAGES` | `1000` / `50` (defaults) | per-connection signaling rate limit |
 | `LOG_LEVEL` | `info` | `debug` for troubleshooting only - avoid in steady-state production (verbosity) |

@@ -93,6 +93,24 @@ body {
   pointer-events: none;
 }
 
+.unmute-btn {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(22, 24, 29, 0.9);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.unmute-btn:hover {
+  background: rgba(44, 48, 56, 0.95);
+}
+
 .controls {
   display: flex;
   align-items: center;
