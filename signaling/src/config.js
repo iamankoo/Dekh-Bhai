@@ -23,12 +23,19 @@ function parseBoolEnv(name, fallback) {
 }
 
 const isLanTest = parseBoolEnv('LAN_TEST', false);
-const lanBindHost = isLanTest ? '0.0.0.0' : '127.0.0.1';
+const env = process.env.NODE_ENV || 'development';
+// Render (and most PaaS hosts) probe the container's external port on 0.0.0.0 specifically - a
+// process bound only to 127.0.0.1 logs "listening" successfully but is completely unreachable
+// from outside the container, which Render reports as "No open ports detected on 0.0.0.0" and
+// never routes traffic to. LAN_TEST already needed 0.0.0.0 for other devices on the network to
+// reach it; production needs exactly the same thing for Render's own routing to reach it, so
+// loopback-only stays the default for plain local dev only.
+const bindHost = isLanTest || env === 'production' ? '0.0.0.0' : '127.0.0.1';
 
 const config = {
-  env: process.env.NODE_ENV || 'development',
+  env,
   port: parseIntEnv('PORT', 8787),
-  bindHost: lanBindHost,
+  bindHost,
   isLanTest,
 
   // ICE / TURN
