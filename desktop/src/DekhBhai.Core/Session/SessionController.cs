@@ -23,14 +23,15 @@ public sealed class SessionController : IAsyncDisposable
     public event Action<SessionState, SessionStopReason?>? StateChanged;
     public event Action<int>? ViewerCountChanged;
     public event Action<string>? ShareUrlReady;
-    public event Action<string>? ControlUrlReady;
     public event Action<DateTimeOffset, DateTimeOffset?>? SessionTimingReady;
     public event Action<string>? CaptureStatusChanged;
     public event Action<string>? AudioStatusChanged;
     public event Action<string>? SignalingStatusChanged;
 
-    // Control session events
-    public event Action<string, string>? ControlSessionCreated; // controlSessionId, pairingCode
+    // Control session events - a viewer on the normal share link clicked "Remote Control" and is
+    // waiting for this host to Allow/Deny (see ControlRequestReceived), or the resulting session's
+    // subsequent lifecycle once allowed.
+    public event Action<string, string>? ControlRequestReceived; // controlSessionId, viewerId
     public event Action<string>? ControlSessionAuthorized;
     public event Action<string>? ControlSessionRevoked;
     public event Action<string>? ControlSessionConnected;
@@ -122,7 +123,7 @@ public sealed class SessionController : IAsyncDisposable
                 };
 
                 // Control session signaling events
-                _signaling.ControlSessionCreated += OnControlSessionCreated;
+                _signaling.ControlRequestReceived += OnControlRequestReceived;
                 _signaling.ControlSessionAuthorized += OnControlSessionAuthorized;
                 _signaling.ControlSessionRevoked += OnControlSessionRevoked;
                 _signaling.ControlSessionsListed += OnControlSessionsListed;
@@ -147,19 +148,6 @@ public sealed class SessionController : IAsyncDisposable
                     null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
 
                 SetState(SessionState.Live);
-
-                // Remote control was previously wired end-to-end (WebRtcHost data channel,
-                // InputInjector, the signaling ControlSession state machine, viewer/control.js)
-                // but nothing ever called CreateControlSessionAsync - so no control session, URL,
-                // or pairing code was ever produced, and the share link only ever pointed at the
-                // view-only page. Creating it automatically here (rather than behind a separate
-                // button) means every Live session is control-capable via the one link/QR the user
-                // already shares, matching the product's "share the link, they can view AND
-                // control" expectation. This does not weaken the security model: a controller
-                // still needs both the unguessable session id AND the separate pairing code
-                // embedded in this link (see OnControlSessionCreated) - the same bar the plain
-                // viewer link already sets for viewing.
-                _ = EnableRemoteControlAsync();
             }
             catch (Exception ex)
             {
@@ -213,31 +201,16 @@ public sealed class SessionController : IAsyncDisposable
 
     // Control session public methods
 
-    private async Task EnableRemoteControlAsync()
-    {
-        // Fire-and-forget from Start()'s caller - a control-session setup failure must never
-        // take down an otherwise-successful screen-share session, so it's swallowed here rather
-        // than propagated.
-        try
-        {
-            await CreateControlSessionAsync();
-        }
-        catch (Exception ex)
-        {
-            CaptureStatusChanged?.Invoke($"Remote control unavailable: {ex.Message}");
-        }
-    }
-
-    public async Task CreateControlSessionAsync()
-    {
-        if (_signaling == null) return;
-        await _signaling.SendCreateControlSessionAsync();
-    }
-
     public async Task AuthorizeControlSessionAsync(string controlSessionId)
     {
         if (_signaling == null) return;
         await _signaling.SendAuthorizeControlSessionAsync(controlSessionId);
+    }
+
+    public async Task DenyControlSessionAsync(string controlSessionId)
+    {
+        if (_signaling == null) return;
+        await _signaling.SendDenyControlSessionAsync(controlSessionId);
     }
 
     public async Task RevokeControlSessionAsync(string controlSessionId)
@@ -254,38 +227,9 @@ public sealed class SessionController : IAsyncDisposable
 
     // Control session signaling event handlers
 
-    private void OnControlSessionCreated(ControlSessionInfo info)
+    private void OnControlRequestReceived(string controlSessionId, string viewerId)
     {
-        var baseUrl = _lanIp != "localhost" 
-            ? $"http://{_lanIp}:8787/" 
-            : _viewerBaseHttpUri.ToString();
-        
-        var controlUrl = new Uri(baseUrl.TrimEnd('/') + $"/control/{_signaling?.SessionId}?pairing={info.PairingCode}").ToString();
-        ControlSessionCreated?.Invoke(info.ControlSessionId, info.PairingCode);
-        CaptureStatusChanged?.Invoke($"Control session created. Pairing code: {info.PairingCode}");
-        ControlUrlReady?.Invoke(controlUrl);
-
-        // Authorizing immediately (rather than waiting for a separate host click) is safe here
-        // because the host's own act of starting the share is the authorization - the control
-        // session was created BY the host's own running process, using its own hostToken, in
-        // direct response to going Live. The actual access-control gate against a stranger is the
-        // pairing code embedded in controlUrl above (a second, separate secret from the session
-        // id), which the signaling server still enforces (see server.js role=control handling) -
-        // this does not skip that check, it just removes a redundant extra confirmation click for
-        // a session the host already chose to create.
-        _ = AuthorizeSilentlyAsync(info.ControlSessionId);
-    }
-
-    private async Task AuthorizeSilentlyAsync(string controlSessionId)
-    {
-        try
-        {
-            await AuthorizeControlSessionAsync(controlSessionId);
-        }
-        catch (Exception ex)
-        {
-            CaptureStatusChanged?.Invoke($"Remote control authorization failed: {ex.Message}");
-        }
+        ControlRequestReceived?.Invoke(controlSessionId, viewerId);
     }
 
     private void OnControlSessionAuthorized(string controlSessionId)

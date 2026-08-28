@@ -155,6 +155,16 @@ class SessionStore {
         return controlSession;
     }
 
+    /** Same as createControlSession, but for a request originating from a viewer (not the host) - looks the session up directly rather than requiring the host's own token. */
+    createControlSessionForViewer(screenSessionId) {
+        const session = this.get(screenSessionId);
+        if (!session) return null;
+        const controlSession = new ControlSession(screenSessionId, session.hostToken);
+        session.controlSessions.set(controlSession.id, controlSession);
+        this.controlSessions.set(controlSession.id, controlSession);
+        return controlSession;
+    }
+
     getControlSession(controlSessionId) {
         return this.controlSessions.get(controlSessionId);
     }

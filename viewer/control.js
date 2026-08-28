@@ -43,6 +43,11 @@ let sessionExpiresAt = null;
 let controlSessionId = null;
 let controlToken = null;
 let viewerId = null;
+// iceServers arrive on control-authorized, but the actual SDP offer only arrives later (a
+// separate control-offer message sent once the host finishes setting up its side of the control
+// peer connection - see WebRtcHost.CreateControlConnectionAsync) - held here so handleOffer has
+// them when that later message arrives.
+let pendingIceServers = [];
 
 let mouseState = {
     x: 0,
@@ -272,12 +277,22 @@ function connect() {
                 sessionStartedAt = msg.startedAt || null;
                 sessionExpiresAt = msg.expiresAt || null;
                 startElapsedLoop();
-                await handleOffer(msg.sdp, msg.iceServers);
+                // No sdp here yet - this message only carries iceServers. The host doesn't start
+                // building its control peer connection (and so doesn't have an offer to send)
+                // until it separately learns this control viewer has joined; that offer arrives
+                // as its own control-offer message, handled below.
+                pendingIceServers = msg.iceServers || [];
                 break;
             case 'offer':
                 await handleOffer(msg.sdp, msg.iceServers);
                 break;
+            case 'control-offer':
+                await handleOffer(msg.sdp, pendingIceServers);
+                break;
             case 'ice-candidate':
+                await handleRemoteIceCandidate(msg.candidate);
+                break;
+            case 'control-ice-candidate':
                 await handleRemoteIceCandidate(msg.candidate);
                 break;
             case 'session-ended':
@@ -289,6 +304,16 @@ function connect() {
                 terminal = true;
                 setViewerState('SESSION_EXPIRED');
                 teardownPeerConnection();
+                break;
+            case 'control-session-revoked':
+                // Host revoked - control must stop immediately, not just on the next reconnect
+                // attempt. releaseAllModifiers() before teardown so a modifier held at the exact
+                // moment of revocation isn't left stuck client-side either.
+                terminal = true;
+                releaseAllModifiers();
+                teardownPeerConnection();
+                setViewerState('SESSION_ENDED');
+                placeholderText.textContent = 'Remote control was revoked by the host.';
                 break;
             case 'error':
                 terminal = true;
@@ -431,6 +456,8 @@ function stopStatsLoop() {
 let touchStartTime = 0;
 let touchStartX = 0;
 let touchStartY = 0;
+let twoFingerLastY = 0;
+let twoFingerMoved = false;
 
 function getVideoRect() {
     return videoEl.getBoundingClientRect();
@@ -526,59 +553,90 @@ function sendScroll(deltaY) {
     });
 }
 
-// Touch handling
+// Touch handling.
+//
+// One finger = move cursor; a quick tap-and-release with little movement is a left click, a
+// slower one that moves is a drag (mouse stays down for the whole gesture, exactly like a real
+// mouse button held while moving).
+//
+// Two fingers is ambiguous at touchstart - it becomes a right click only if the fingers lift
+// again quickly without moving (a tap), or a scroll if they move first (a swipe). Right-click is
+// therefore decided at touchend, and scrolling is driven live during touchmove.
 touchOverlay.addEventListener('touchstart', (e) => {
     e.preventDefault();
-    const touch = e.touches[0];
-    const coords = getNormalizedCoords(touch.clientX, touch.clientY);
-    if (!coords) return;
-    
-    touchStartTime = Date.now();
-    touchStartX = touch.clientX;
-    touchStartY = touch.clientY;
-    
-    sendMouseMove(coords.x, coords.y);
-    
-    // Single finger = left click drag / move
+
     if (e.touches.length === 1) {
+        const touch = e.touches[0];
+        const coords = getNormalizedCoords(touch.clientX, touch.clientY);
+        if (!coords) return;
+
+        touchStartTime = Date.now();
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+
+        sendMouseMove(coords.x, coords.y);
         sendMouseDown('left');
+    } else if (e.touches.length === 2) {
+        // A left button held from a preceding single-finger touch must not bleed into a
+        // two-finger gesture as an accidental drag.
+        if (mouseState.leftDown) sendMouseUp('left');
+
+        touchStartTime = Date.now();
+        twoFingerLastY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        twoFingerMoved = false;
     }
-    // Two fingers = right click
-    else if (e.touches.length === 2) {
-        sendMouseDown('right');
-    }
+
+    touchOverlay._lastTouchCount = e.touches.length;
 }, { passive: false });
 
 touchOverlay.addEventListener('touchmove', (e) => {
     e.preventDefault();
-    const touch = e.touches[0];
-    const coords = getNormalizedCoords(touch.clientX, touch.clientY);
-    if (!coords) return;
-    
-    sendMouseMove(coords.x, coords.y);
+
+    if (e.touches.length === 1) {
+        const touch = e.touches[0];
+        const coords = getNormalizedCoords(touch.clientX, touch.clientY);
+        if (!coords) return;
+        sendMouseMove(coords.x, coords.y);
+    } else if (e.touches.length === 2) {
+        const currentY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        const deltaY = twoFingerLastY - currentY; // finger moves up -> content scrolls down
+        if (Math.abs(deltaY) > 2) {
+            twoFingerMoved = true;
+            sendScroll(deltaY / 4); // matches roughly one wheel "notch" per ~4px of finger travel
+            twoFingerLastY = currentY;
+        }
+    }
 }, { passive: false });
 
 touchOverlay.addEventListener('touchend', (e) => {
     e.preventDefault();
+    const lastCount = touchOverlay._lastTouchCount;
     const touchDuration = Date.now() - touchStartTime;
-    const touchDistance = Math.hypot(
-        (e.changedTouches[0]?.clientX || touchStartX) - touchStartX,
-        (e.changedTouches[0]?.clientY || touchStartY) - touchStartY
-    );
-    
-    // Release all buttons
-    if (mouseState.leftDown) sendMouseUp('left');
-    if (mouseState.rightDown) sendMouseUp('right');
-    
-    // Tap detection (short touch, minimal movement) = click
-    if (touchDuration < 300 && touchDistance < 20) {
-        if (e.touches.length === 0 && touchOverlay._lastTouchCount === 1) {
+
+    if (lastCount === 1) {
+        const touchDistance = Math.hypot(
+            (e.changedTouches[0]?.clientX || touchStartX) - touchStartX,
+            (e.changedTouches[0]?.clientY || touchStartY) - touchStartY
+        );
+        if (mouseState.leftDown) sendMouseUp('left');
+        if (touchDuration < 300 && touchDistance < 20) {
             sendMouseClick('left');
-        } else if (e.touches.length === 0 && touchOverlay._lastTouchCount === 2) {
-            sendMouseClick('right');
+        }
+    } else if (lastCount === 2) {
+        // Only a tap (no scroll movement happened) resolves to a right click.
+        if (!twoFingerMoved && touchDuration < 300) {
+            sendMouseDown('right');
+            sendMouseUp('right');
         }
     }
-    
+
+    touchOverlay._lastTouchCount = e.touches.length;
+}, { passive: false });
+
+touchOverlay.addEventListener('touchcancel', (e) => {
+    e.preventDefault();
+    if (mouseState.leftDown) sendMouseUp('left');
+    if (mouseState.rightDown) sendMouseUp('right');
     touchOverlay._lastTouchCount = e.touches.length;
 }, { passive: false });
 
@@ -742,6 +800,72 @@ function normalizeKey(key) {
     };
     return map[key] || key;
 }
+
+// ============================================================
+// Physical keyboard passthrough
+// ============================================================
+//
+// The on-screen keyboard above exists for touch devices with no keyboard of their own. A
+// controller on a laptop/desktop already has a real keyboard, so its actual keydown/keyup events
+// are forwarded directly - no need to hunt-and-peck the virtual keyboard just because the phone
+// UI happens to have one. Active for the whole page any time the control channel is open.
+//
+// e.key already reflects the browser/OS's own shift + caps-lock + keyboard-layout handling (e.g.
+// Shift+a arrives as 'A', Shift+; arrives as ':'), so a plain printable character is forwarded
+// as-is via text_input (which also transparently supports non-ASCII characters from any keyboard
+// layout) - it does not need shift simulated separately. Only Ctrl/Alt/Meta shortcuts and
+// non-printable keys (arrows, function keys, Enter, ...) go through the down/up keyboard_* path
+// InputInjector uses for held keys and modifier combinations like Ctrl+C.
+
+function isModifierKeyName(key) {
+    return key === 'Shift' || key === 'Control' || key === 'Alt' || key === 'Meta' || key === 'AltGraph';
+}
+
+document.addEventListener('keydown', (e) => {
+    if (!controlDc || controlDc.readyState !== 'open') return;
+    e.preventDefault();
+
+    const key = e.key === 'AltGraph' ? 'Alt' : e.key;
+    if (isModifierKeyName(key)) {
+        sendControl({ type: 'keyboard_down', key });
+        return;
+    }
+
+    const isPrintable = key.length === 1;
+    if (isPrintable && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        sendControl({ type: 'text_input', text: key });
+        return;
+    }
+
+    // A non-printable special key, or a Ctrl/Alt/Meta shortcut (e.g. Ctrl+C) - InputInjector
+    // presses the requested modifiers before the key itself.
+    sendControl({
+        type: 'keyboard_down',
+        key,
+        modifiers: { shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey },
+    });
+});
+
+document.addEventListener('keyup', (e) => {
+    if (!controlDc || controlDc.readyState !== 'open') return;
+    e.preventDefault();
+
+    const key = e.key === 'AltGraph' ? 'Alt' : e.key;
+    if (isModifierKeyName(key)) {
+        sendControl({ type: 'keyboard_up', key });
+        return;
+    }
+
+    const isPrintable = key.length === 1;
+    if (isPrintable && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        return; // text_input on keydown already completed a full press+release host-side
+    }
+
+    // Deliberately no modifiers here - releasing e.g. 'c' from a still-held Ctrl+C must not also
+    // release Ctrl (the physical Control key is still down on the controller's keyboard until its
+    // own keyup fires above).
+    sendControl({ type: 'keyboard_up', key });
+});
 
 // Keyboard modal
 keyboardBtn.addEventListener('click', () => {

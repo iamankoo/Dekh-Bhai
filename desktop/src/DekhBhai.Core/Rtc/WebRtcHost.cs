@@ -183,6 +183,17 @@ public sealed class WebRtcHost : IAsyncDisposable
     /// </summary>
     public async Task CreateControlConnectionAsync(string controlSessionId, IReadOnlyList<RTCIceServer> iceServers)
     {
+        // Only one controller at a time - a second control session being authorized while an
+        // earlier one is still connecting (or already active) must cleanly replace it, not
+        // silently overwrite _controlPc/_controlDataChannel out from under an in-flight
+        // negotiation. Found during testing: two overlapping control requests corrupted both
+        // connections, leaving each stuck at connectionState "connecting" forever even though ICE
+        // itself connected fine.
+        if (_controlPc != null)
+        {
+            CleanupControlConnection();
+        }
+
         _controlSessionId = controlSessionId;
         _iceServers = iceServers;
 
@@ -190,6 +201,15 @@ public sealed class WebRtcHost : IAsyncDisposable
         {
             var config = new RTCConfiguration { iceServers = _iceServers.ToList() };
             _controlPc = new RTCPeerConnection(config);
+
+            // The control connection must carry the same live video/audio as a normal viewer -
+            // without these tracks the phone's control page never receives a picture, so
+            // videoEl.videoWidth stays 0, getNormalizedCoords() always returns null, and every
+            // touch is silently dropped before a single control command is ever sent. This was
+            // the actual reason remote control did nothing end-to-end despite the data channel,
+            // signaling, and InputInjector all being wired correctly.
+            _controlPc.addTrack(new MediaStreamTrack(VideoFormatVp8, MediaStreamStatusEnum.SendOnly));
+            _controlPc.addTrack(new MediaStreamTrack(AudioFormatOpus, MediaStreamStatusEnum.SendOnly));
 
             // Create data channel for control commands
             _controlDataChannel = await _controlPc.createDataChannel("control", new RTCDataChannelInit { ordered = true });
@@ -352,6 +372,10 @@ public sealed class WebRtcHost : IAsyncDisposable
                 pc.SendVideo(durationRtpUnits, sample);
             }
         }
+        if (_controlPc is { connectionState: RTCPeerConnectionState.connected })
+        {
+            _controlPc.SendVideo(durationRtpUnits, sample);
+        }
     }
 
     public void SendAudio(byte[] sample, uint durationRtpUnits)
@@ -362,6 +386,10 @@ public sealed class WebRtcHost : IAsyncDisposable
             {
                 pc.SendAudio(durationRtpUnits, sample);
             }
+        }
+        if (_controlPc is { connectionState: RTCPeerConnectionState.connected })
+        {
+            _controlPc.SendAudio(durationRtpUnits, sample);
         }
     }
 

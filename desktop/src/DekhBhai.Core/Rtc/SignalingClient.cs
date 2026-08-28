@@ -27,6 +27,7 @@ public sealed class SignalingClient : IAsyncDisposable
     public event Action<IReadOnlyList<IceServerPayload>>? Resumed;
 
     // Control session events
+    public event Action<string, string>? ControlRequestReceived; // controlSessionId, viewerId
     public event Action<ControlSessionInfo>? ControlSessionCreated;
     public event Action<string>? ControlSessionAuthorized;
     public event Action<string>? ControlSessionRevoked;
@@ -188,11 +189,32 @@ public sealed class SignalingClient : IAsyncDisposable
             case "viewer-left" when msg.ViewerId is not null:
                 ViewerLeft?.Invoke(msg.ViewerId, msg.ViewerCount ?? 0);
                 break;
+            // control.js (the browser control page) reuses the exact same bare "answer"/
+            // "ice-candidate" message shape the plain viewer uses - the signaling server tags a
+            // control viewer's messages with controlSessionId instead of viewerId (see
+            // server.js's role=control socket handler), so that's what distinguishes the two here.
+            // Before this, every control viewer's SDP answer matched neither case (ViewerId was
+            // never set on it) and was silently dropped - the host's control RTCPeerConnection
+            // never got setRemoteDescription called on it, so its DTLS transport never armed
+            // itself as the passive side. ICE still reported "connected" (a candidate pair can
+            // succeed from the trickled ICE candidates alone), but the connection sat at
+            // connectionState "connecting" forever - this was the actual reason remote control
+            // never worked at all, from the very first implementation, independent of every other
+            // control-specific fix in this file/WebRtcHost.cs/control.js.
+            case "answer" when msg is { ControlSessionId: not null, Sdp: not null }:
+                ControlAnswerReceived?.Invoke(msg.ControlSessionId, msg.Sdp);
+                break;
             case "answer" when msg is { ViewerId: not null, Sdp: not null }:
                 AnswerReceived?.Invoke(msg.ViewerId, msg.Sdp);
                 break;
+            case "ice-candidate" when msg is { ControlSessionId: not null, Candidate: not null }:
+                ControlIceCandidateReceived?.Invoke(msg.ControlSessionId, msg.Candidate);
+                break;
             case "ice-candidate" when msg is { ViewerId: not null, Candidate: not null }:
                 IceCandidateReceived?.Invoke(msg.ViewerId, msg.Candidate);
+                break;
+            case "control-request" when msg is { ControlSessionId: not null, ViewerId: not null }:
+                ControlRequestReceived?.Invoke(msg.ControlSessionId, msg.ViewerId);
                 break;
             case "control-session-created" when msg is { ControlSessionId: not null, PairingCode: not null, ControlToken: not null }:
                 ControlSessionCreated?.Invoke(new ControlSessionInfo
@@ -260,6 +282,9 @@ public sealed class SignalingClient : IAsyncDisposable
 
     public Task SendRevokeControlSessionAsync(string controlSessionId, CancellationToken ct = default) =>
         SendAsync(new SignalingMessage { Type = "revoke-control-session", ControlSessionId = controlSessionId, HostToken = _hostToken }, ct);
+
+    public Task SendDenyControlSessionAsync(string controlSessionId, CancellationToken ct = default) =>
+        SendAsync(new SignalingMessage { Type = "deny-control-session", ControlSessionId = controlSessionId, HostToken = _hostToken }, ct);
 
     public Task SendListControlSessionsAsync(CancellationToken ct = default) =>
         SendAsync(new SignalingMessage { Type = "list-control-sessions", HostToken = _hostToken }, ct);

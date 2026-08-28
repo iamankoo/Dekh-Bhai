@@ -25,6 +25,8 @@ const videoEl = document.getElementById('remoteVideo');
 const fullscreenBtn = document.getElementById('fullscreenBtn');
 const statsLine = document.getElementById('statsLine');
 const unmuteBtn = document.getElementById('unmuteBtn');
+const remoteControlBtn = document.getElementById('remoteControlBtn');
+const remoteControlStatus = document.getElementById('remoteControlStatus');
 
 let pc = null;
 let ws = null;
@@ -55,6 +57,9 @@ function setViewerState(name) {
     placeholderEl.style.display = 'flex';
   } else {
     placeholderEl.style.display = 'none';
+  }
+  if (name !== 'LIVE' && name !== 'CONNECTING') {
+    remoteControlBtn.disabled = true;
   }
 }
 
@@ -211,12 +216,30 @@ function connect() {
         sessionExpiresAt = msg.expiresAt || null;
         startElapsedLoop();
         setViewerState('CONNECTING');
+        remoteControlBtn.disabled = false;
         break;
       case 'offer':
         await handleOffer(msg.sdp, msg.iceServers);
         break;
       case 'ice-candidate':
         await handleRemoteIceCandidate(msg.candidate);
+        break;
+      case 'control-request-pending':
+        setRemoteControlStatus('Waiting for host to allow remote control…');
+        break;
+      case 'control-request-approved':
+        setRemoteControlStatus('Approved — opening remote control…');
+        // The pairing code + session id are the same trust bar this viewer already crossed to
+        // load this page (an unguessable session id) - navigating here is just handing them to
+        // the dedicated control page (viewer/control.html) that already implements the full
+        // touch/keyboard control UI over its own WebRTC connection.
+        window.location.href = `/control/${encodeURIComponent(getSessionId())}?pairing=${encodeURIComponent(msg.pairingCode)}`;
+        break;
+      case 'control-request-denied':
+        setRemoteControlStatus('Host denied the remote control request.');
+        remoteControlBtn.disabled = false;
+        remoteControlBtn.textContent = 'Remote Control';
+        setTimeout(() => { remoteControlStatus.hidden = true; }, 4000);
         break;
       case 'session-ended':
         terminal = true;
@@ -352,6 +375,18 @@ fullscreenBtn.addEventListener('click', () => {
   // Affects only this browser tab's rendering - never touches the WebSocket/RTCPeerConnection,
   // so entering/exiting fullscreen (including via Esc) can never end the session.
   if (videoEl.requestFullscreen) videoEl.requestFullscreen();
+});
+
+function setRemoteControlStatus(text) {
+  remoteControlStatus.textContent = text;
+  remoteControlStatus.hidden = false;
+}
+
+remoteControlBtn.addEventListener('click', () => {
+  remoteControlBtn.disabled = true;
+  remoteControlBtn.textContent = 'Requesting…';
+  setRemoteControlStatus('Requesting remote control…');
+  send({ type: 'request-control' });
 });
 
 connect();

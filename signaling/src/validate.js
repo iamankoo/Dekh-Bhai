@@ -74,12 +74,35 @@ function validateHostMessage(msg) {
             return { ok: true };
 
         case 'revoke-control-session':
+        case 'deny-control-session':
             if (!isShortToken(msg.hostToken)) return { ok: false, reason: 'missing hostToken' };
             if (!isShortToken(msg.controlSessionId)) return { ok: false, reason: 'missing controlSessionId' };
             return { ok: true };
 
         case 'list-control-sessions':
             if (!isShortToken(msg.hostToken)) return { ok: false, reason: 'missing hostToken' };
+            return { ok: true };
+
+        // The host's SDP offer/ICE candidates for the control WebRTC connection (see
+        // WebRtcHost.CreateControlConnectionAsync) - forwarded to the control viewer by the
+        // 'control-offer'/'control-ice-candidate' case in server.js. Without these two cases that
+        // forwarding code was unreachable: every offer and ICE candidate the host sent for a
+        // control connection was rejected here first as an "unknown message type" and the control
+        // viewer's page was left stuck on "Connecting..." forever, with no video/data channel ever
+        // established, no matter how correct the rest of the control plumbing was.
+        case 'control-offer':
+            if (!isShortToken(msg.hostToken)) return { ok: false, reason: 'missing hostToken' };
+            if (!isShortToken(msg.controlSessionId)) return { ok: false, reason: 'missing controlSessionId' };
+            if (!isBoundedString(msg.sdp)) return { ok: false, reason: 'missing/invalid sdp' };
+            return { ok: true };
+
+        case 'control-ice-candidate':
+            if (!isShortToken(msg.hostToken)) return { ok: false, reason: 'missing hostToken' };
+            if (!isShortToken(msg.controlSessionId)) return { ok: false, reason: 'missing controlSessionId' };
+            if (!msg.candidate || typeof msg.candidate !== 'object') {
+                return { ok: false, reason: 'missing/invalid candidate' };
+            }
+            if (!isBoundedString(msg.candidate.candidate)) return { ok: false, reason: 'invalid candidate.candidate' };
             return { ok: true };
 
         default:
@@ -103,6 +126,11 @@ function validateViewerMessage(msg) {
                 return { ok: false, reason: 'missing/invalid candidate' };
             }
             if (!isBoundedString(msg.candidate.candidate)) return { ok: false, reason: 'invalid candidate.candidate' };
+            return { ok: true };
+
+        // Sent by the normal viewer's "Remote Control" button - no extra fields, the session is
+        // already implied by this socket.
+        case 'request-control':
             return { ok: true };
 
         // Control viewer messages

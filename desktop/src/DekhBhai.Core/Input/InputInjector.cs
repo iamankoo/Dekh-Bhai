@@ -245,6 +245,12 @@ public sealed class InputInjector : IDisposable
         }
     }
 
+    /// <summary>
+    /// Releases every key and mouse button this injector may have pressed. Called whenever a
+    /// controller disconnects (clean or abrupt) or control is revoked, so a viewer that vanishes
+    /// mid-gesture (network drop, app killed, browser tab closed) can never leave the host's
+    /// Ctrl/Shift/Alt/Win or a mouse button stuck down.
+    /// </summary>
     public void ReleaseAllKeys()
     {
         lock (_lock)
@@ -259,7 +265,31 @@ public sealed class InputInjector : IDisposable
             SendKey(0x11, true); // Ctrl
             SendKey(0x12, true); // Alt
             SendKey(0x5B, true); // Win
+
+            // Unconditional mouse-up for every button - a no-op if the button wasn't actually
+            // down, but the only way to guarantee none is left held after an abrupt disconnect.
+            SendMouseUpRaw(MOUSEEVENTF_LEFTUP);
+            SendMouseUpRaw(MOUSEEVENTF_RIGHTUP);
+            SendMouseUpRaw(MOUSEEVENTF_MIDDLEUP);
         }
+    }
+
+    private static void SendMouseUpRaw(uint flag)
+    {
+        var input = new INPUT
+        {
+            type = INPUT_MOUSE,
+            U = new InputUnion
+            {
+                mi = new MOUSEINPUT
+                {
+                    dx = 0, dy = 0, mouseData = 0,
+                    dwFlags = flag | MOUSEEVENTF_ABSOLUTE,
+                    time = 0, dwExtraInfo = IntPtr.Zero
+                }
+            }
+        };
+        SendInput(1, ref input, Marshal.SizeOf<INPUT>());
     }
 
     private void ApplyModifiers(KeyboardModifiers? modifiers, bool down)
@@ -274,6 +304,12 @@ public sealed class InputInjector : IDisposable
 
     private void SendKey(ushort vk, bool up)
     {
+        // KEYEVENTF_UNICODE is documented to require wVk == 0 (it tells Windows to synthesize a
+        // VK_PACKET keystroke from wScan instead of using a real virtual-key code). This used to
+        // set KEYEVENTF_UNICODE together with a real, non-zero vk - undefined behavior per the
+        // SendInput contract - which is exactly why special keys sent through this path (Enter,
+        // Backspace, arrows, modifiers, ...) were flaky/silently dropped in some target
+        // applications during testing, while SendChar's pure-Unicode path (wVk=0) worked fine.
         var input = new INPUT
         {
             type = INPUT_KEYBOARD,
@@ -283,7 +319,7 @@ public sealed class InputInjector : IDisposable
                 {
                     wVk = vk,
                     wScan = 0,
-                    dwFlags = (up ? KEYEVENTF_KEYUP : 0) | KEYEVENTF_UNICODE,
+                    dwFlags = up ? KEYEVENTF_KEYUP : 0,
                     time = 0,
                     dwExtraInfo = IntPtr.Zero
                 }

@@ -42,6 +42,11 @@ class ControlSession {
         this.viewerSocket = null;
         this.viewerId = null;
         this.revoked = false;
+        // The already-open role=viewer socket that asked for control (via the normal viewer's
+        // "Remote Control" button), kept only to deliver the host's authorize/deny decision back
+        // to it. Distinct from viewerSocket above, which is the (later, separate) role=control
+        // socket that actually carries the WebRTC control connection once approved.
+        this.requesterSocket = null;
     }
 
     isExpired() {

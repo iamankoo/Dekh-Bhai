@@ -103,6 +103,30 @@
                 </StackPanel>
             </Border>
 
+            <!-- Shown when a viewer on the share link clicks "Remote Control" - the host must
+                 explicitly Allow or Deny before that viewer gets any mouse/keyboard access. -->
+            <Border x:Name="ControlRequestPanel" Background="#20301A" BorderBrush="#3DDC84" BorderThickness="1"
+                    Padding="12" CornerRadius="6" Margin="0,0,0,12" Visibility="Collapsed">
+                <StackPanel>
+                    <TextBlock Text="Remote control requested" Foreground="White" FontWeight="SemiBold" FontSize="13"/>
+                    <TextBlock Text="Someone on your share link wants to control this laptop's mouse and keyboard." Foreground="#B7BCC4" FontSize="11.5" TextWrapping="Wrap" Margin="0,2,0,10"/>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                        <Button Content="ALLOW" Style="{StaticResource PrimaryButton}" Padding="14,6" Margin="0,0,8,0" Click="ControlAllowButton_Click"/>
+                        <Button Content="DENY" Style="{StaticResource DangerButton}" Padding="14,6" Click="ControlDenyButton_Click"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Shown while a viewer's remote control connection is active. -->
+            <Border x:Name="ControlActivePanel" Background="#16181D" BorderBrush="#2A2D34" BorderThickness="1"
+                    Padding="10,8" CornerRadius="6" Margin="0,0,0,12" Visibility="Collapsed">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <Ellipse Width="8" Height="8" Fill="#3DDC84" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                    <TextBlock Text="Remote control active" Foreground="White" FontSize="12.5" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <Button Content="REVOKE" Style="{StaticResource DangerButton}" Padding="10,4" FontSize="11.5" Click="ControlRevokeButton_Click"/>
+                </StackPanel>
+            </Border>
+
             <Button x:Name="StopButton" Content="STOP SHARING" Style="{StaticResource DangerButton}" HorizontalAlignment="Center" Click="StopButton_Click"/>
 
             <StackPanel Margin="0,16,0,0">

@@ -16,6 +16,8 @@ public partial class MainWindow : Window
     private DateTimeOffset? _expiresAt;
     private readonly DispatcherTimer _elapsedTimer;
     private bool _isInBackgroundMode;
+    private string? _pendingControlSessionId;
+    private string? _activeControlSessionId;
 
     public TaskbarIcon? TrayIcon { get; set; }
 
@@ -27,11 +29,12 @@ public partial class MainWindow : Window
 
         _session.StateChanged += (state, reason) => Dispatcher.Invoke(() => OnStateChanged(state, reason));
         _session.ShareUrlReady += url => Dispatcher.Invoke(() => OnShareUrlReady(url));
-        // Fires a moment after ShareUrlReady, once the control session (mouse/keyboard access)
-        // is ready - replaces the view-only link/QR with the control-capable one so the single
-        // link the user shares/scans grants both viewing and remote control.
-        _session.ControlUrlReady += url => Dispatcher.Invoke(() => OnShareUrlReady(url));
         _session.SessionTimingReady += (startedAt, expiresAt) => Dispatcher.Invoke(() => OnSessionTimingReady(startedAt, expiresAt));
+        // A viewer on the share link clicked "Remote Control" - show Allow/Deny so a stranger who
+        // only has the view link can never get mouse/keyboard access without this explicit click.
+        _session.ControlRequestReceived += (controlSessionId, viewerId) => Dispatcher.Invoke(() => OnControlRequestReceived(controlSessionId, viewerId));
+        _session.ControlSessionConnected += controlSessionId => Dispatcher.Invoke(() => OnControlSessionConnected(controlSessionId));
+        _session.ControlSessionDisconnected += _ => Dispatcher.Invoke(OnControlSessionDisconnected);
         _session.ViewerCountChanged += count => Dispatcher.Invoke(() => ViewerStatusText.Text = $"viewers: {count}");
         _session.CaptureStatusChanged += text => Dispatcher.Invoke(() =>
         {
@@ -173,6 +176,51 @@ public partial class MainWindow : Window
         QrImage.Source = QrCodeGenerator.Generate(url);
     }
 
+    private void OnControlRequestReceived(string controlSessionId, string viewerId)
+    {
+        // Only one pending request is shown at a time - a second request while one is already
+        // pending replaces it (the older one will simply time out server-side after 5 minutes if
+        // never acted on).
+        _pendingControlSessionId = controlSessionId;
+        ControlRequestPanel.Visibility = Visibility.Visible;
+    }
+
+    private async void ControlAllowButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_pendingControlSessionId is not { } id) return;
+        ControlRequestPanel.Visibility = Visibility.Collapsed;
+        _pendingControlSessionId = null;
+        await _session.AuthorizeControlSessionAsync(id);
+    }
+
+    private async void ControlDenyButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_pendingControlSessionId is not { } id) return;
+        ControlRequestPanel.Visibility = Visibility.Collapsed;
+        _pendingControlSessionId = null;
+        await _session.DenyControlSessionAsync(id);
+    }
+
+    private void OnControlSessionConnected(string controlSessionId)
+    {
+        _activeControlSessionId = controlSessionId;
+        ControlActivePanel.Visibility = Visibility.Visible;
+    }
+
+    private void OnControlSessionDisconnected()
+    {
+        _activeControlSessionId = null;
+        ControlActivePanel.Visibility = Visibility.Collapsed;
+    }
+
+    private async void ControlRevokeButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_activeControlSessionId is not { } id) return;
+        await _session.RevokeControlSessionAsync(id);
+        ControlActivePanel.Visibility = Visibility.Collapsed;
+        _activeControlSessionId = null;
+    }
+
     private void OnSessionTimingReady(DateTimeOffset startedAt, DateTimeOffset? expiresAt)
     {
         _startedAt = startedAt;
@@ -201,6 +249,14 @@ public partial class MainWindow : Window
         StoppingPanel.Visibility = Visibility.Collapsed;
         PostSessionPanel.Visibility = Visibility.Collapsed;
         _elapsedTimer.Stop();
+
+        if (state is not SessionState.Live)
+        {
+            ControlRequestPanel.Visibility = Visibility.Collapsed;
+            ControlActivePanel.Visibility = Visibility.Collapsed;
+            _pendingControlSessionId = null;
+            _activeControlSessionId = null;
+        }
 
         switch (state)
         {

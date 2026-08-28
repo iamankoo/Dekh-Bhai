@@ -70,11 +70,19 @@
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.8);
-    display: flex;
     align-items: flex-end;
     justify-content: center;
     z-index: 1000;
     padding: 1rem;
+}
+
+/* An author `display` rule beats the UA stylesheet's `[hidden] { display: none }` regardless of
+   selector specificity, so `.keyboard-modal { display: flex }` alone would render the modal
+   permanently - even with the `hidden` attribute set - covering part of the live screen and
+   swallowing touches meant for the video underneath. Scoping `display: flex` to :not([hidden])
+   (the same pattern .touch-overlay already uses below) is what actually lets `hidden` hide it. */
+.keyboard-modal:not([hidden]) {
+    display: flex;
 }
 
 .keyboard-container {

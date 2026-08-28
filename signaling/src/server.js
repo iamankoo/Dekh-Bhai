@@ -254,7 +254,18 @@ function handleHost(socket, tracker) {
                     type: 'control-session-authorized',
                     controlSessionId: controlSession.id,
                 });
-                // Notify the waiting control viewer
+                // Tell whichever viewer asked for this (via the normal viewer's "Remote Control"
+                // button) that the host said yes, so it can open the control connection.
+                if (controlSession.requesterSocket) {
+                    send(controlSession.requesterSocket, {
+                        type: 'control-request-approved',
+                        controlSessionId: controlSession.id,
+                        pairingCode: controlSession.pairingCode,
+                    });
+                }
+                // Back-compat: a control viewer that connected directly to /control/:id and is
+                // already waiting on this exact socket (rather than going through request-control
+                // above) gets activated immediately too.
                 if (controlSession.viewerSocket && controlSession.status === 'AUTHORIZED') {
                     send(controlSession.viewerSocket, {
                         type: 'control-authorized',
@@ -265,13 +276,37 @@ function handleHost(socket, tracker) {
                 break;
             }
 
+            case 'deny-control-session': {
+                const controlSession = store.getControlSession(msg.controlSessionId);
+                if (!controlSession || controlSession.screenSessionId !== session.id) {
+                    sendError(socket, 'control-session-not-found-or-unauthorized');
+                    return;
+                }
+                logger.info('control-session.denied', { sessionId: session.id, controlSessionId: msg.controlSessionId });
+                if (controlSession.requesterSocket) {
+                    send(controlSession.requesterSocket, {
+                        type: 'control-request-denied',
+                        controlSessionId: controlSession.id,
+                    });
+                }
+                store.removeControlSession(controlSession.id);
+                break;
+            }
+
             case 'revoke-control-session': {
+                const controlSession = store.getControlSession(msg.controlSessionId);
                 const success = store.revokeControlSession(msg.controlSessionId, msg.hostToken);
                 if (!success) {
                     sendError(socket, 'control-session-not-found-or-unauthorized');
                     return;
                 }
                 logger.info('control-session.revoked', { sessionId: session.id, controlSessionId: msg.controlSessionId });
+                if (controlSession && controlSession.viewerSocket) {
+                    send(controlSession.viewerSocket, {
+                        type: 'control-session-revoked',
+                        controlSessionId: msg.controlSessionId,
+                    });
+                }
                 send(socket, {
                     type: 'control-session-revoked',
                     controlSessionId: msg.controlSessionId,
@@ -379,6 +414,30 @@ function handleViewer(socket, url, tracker) {
         if (!validation.ok) {
             logger.warn('viewer.invalid-message', { reason: validation.reason, type: msg && msg.type });
             sendError(socket, 'invalid-message');
+            return;
+        }
+
+        // The normal viewer's "Remote Control" button - creates a PENDING control session and
+        // asks the host to Allow/Deny it, rather than forwarding to the host like the other
+        // viewer message types below (there is no existing control session yet for the host to
+        // route this against).
+        if (msg.type === 'request-control') {
+            const controlSession = store.createControlSessionForViewer(session.id);
+            if (!controlSession) {
+                sendError(socket, 'session-unavailable');
+                return;
+            }
+            controlSession.requesterSocket = socket;
+            logger.info('control-session.requested', { sessionId: session.id, controlSessionId: controlSession.id, viewerId });
+            send(socket, {
+                type: 'control-request-pending',
+                controlSessionId: controlSession.id,
+            });
+            send(session.hostSocket, {
+                type: 'control-request',
+                controlSessionId: controlSession.id,
+                viewerId,
+            });
             return;
         }
 
